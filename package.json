@@ -1,0 +1,13 @@
+{
+  "name": "caro-online",
+  "version": "1.0.0",
+  "description": "Cờ caro 2 người chơi online, tự ghép trận",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}
