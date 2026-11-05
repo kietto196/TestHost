@@ -1,0 +1,138 @@
+/* Khung giao diện chung cho các game 2 người */
+:root{
+  --bg:#f3f1ec; --surface:#ffffff; --surface-2:#f6f4ef; --line:#e3ded3; --line-2:#cfc8b9;
+  --ink:#1b1d24; --muted:#6b6e78; --good:#22a35a; --bad:#e0453a;
+  --accent:#5b5bf0; --accent-ink:#fff;
+  --p1:#2f6bff; --p2:#ff4b5c;
+  --shadow:0 1px 0 rgba(0,0,0,.03), 0 12px 32px -14px rgba(30,25,10,.32);
+  --radius:20px;
+  --display:'Baloo 2', 'Be Vietnam Pro', system-ui, sans-serif;
+  --ui:'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1117; --surface:#171a23; --surface-2:#1d212c; --line:#262b38; --line-2:#343b4c;
+    --ink:#eceef4; --muted:#959aa8; --shadow:0 1px 0 rgba(255,255,255,.03), 0 16px 36px -16px rgba(0,0,0,.75);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1117; --surface:#171a23; --surface-2:#1d212c; --line:#262b38; --line-2:#343b4c;
+  --ink:#eceef4; --muted:#959aa8; --shadow:0 1px 0 rgba(255,255,255,.03), 0 16px 36px -16px rgba(0,0,0,.75);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{font-family:var(--ui); color:var(--ink); background:var(--bg); -webkit-font-smoothing:antialiased; overflow-x:hidden}
+body::before{content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:radial-gradient(900px 500px at 15% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+             radial-gradient(800px 500px at 100% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);}
+button{font:inherit; color:inherit; cursor:pointer}
+a{color:inherit}
+.sh-app{position:relative; z-index:1; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:14px 16px 28px}
+.hidden{display:none !important}
+
+/* header */
+.sh-top{width:100%; max-width:1100px; display:flex; align-items:center; gap:12px; margin-bottom:14px}
+.sh-back{display:inline-flex; align-items:center; gap:6px; text-decoration:none; font-weight:600; font-size:14px; padding:8px 12px 8px 9px; border-radius:12px; background:var(--surface); border:1px solid var(--line); box-shadow:var(--shadow)}
+.sh-back:hover{border-color:var(--line-2)}
+.sh-title{font-family:var(--display); font-weight:700; font-size:24px; line-height:1; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.sh-tools{display:flex; gap:6px; align-items:center}
+.sh-badge{font-size:12px; color:var(--muted); padding:7px 10px; border-radius:999px; background:var(--surface); border:1px solid var(--line); white-space:nowrap}
+.sh-badge i{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good); margin-right:6px; vertical-align:1px}
+.sh-icon{width:38px; height:38px; border-radius:12px; border:1px solid var(--line); background:var(--surface); display:grid; place-items:center; box-shadow:var(--shadow)}
+.sh-icon svg{width:18px; height:18px}
+
+/* card */
+.sh-card{width:100%; max-width:560px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:28px; margin-top:3vh}
+.sh-hero{display:flex; gap:18px; align-items:center; margin-bottom:20px}
+.sh-thumb{width:84px; height:84px; flex:none; border-radius:20px; overflow:hidden; box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
+.sh-thumb svg{width:100%; height:100%; display:block}
+.sh-h1{font-family:var(--display); font-weight:800; font-size:38px; line-height:1; margin:0 0 6px}
+.sh-tag{margin:0; color:var(--muted); line-height:1.5; font-size:15px}
+.sh-field{display:block; font-size:13px; font-weight:600; color:var(--muted); margin:0 0 8px}
+.sh-input{width:100%; font:600 18px var(--ui); color:var(--ink); background:var(--surface-2); border:1.5px solid var(--line); border-radius:14px; padding:13px 14px; outline:none; transition:border-color .2s}
+.sh-input:focus{border-color:var(--accent)}
+.sh-btn{display:inline-flex; align-items:center; justify-content:center; gap:10px; border:0; border-radius:14px; padding:14px 22px; font-weight:700; font-size:16px; transition:transform .15s, filter .15s; text-decoration:none}
+.sh-btn:active{transform:translateY(1px)}
+.sh-btn:disabled{opacity:.6; cursor:default}
+.sh-primary{background:var(--accent); color:var(--accent-ink); box-shadow:0 10px 22px -12px var(--accent)}
+.sh-primary:hover{filter:brightness(1.06)}
+.sh-ghost{background:transparent; border:1.5px solid var(--line-2)}
+.sh-ghost:hover{background:var(--surface-2)}
+.sh-block{width:100%}
+.sh-row{display:flex; gap:10px; flex-wrap:wrap}
+.sh-stack{display:flex; flex-direction:column; gap:14px}
+
+.sh-howto{margin-top:24px; border-top:1px dashed var(--line-2); padding-top:18px}
+.sh-howto h3{font-family:var(--display); font-size:20px; margin:0 0 10px}
+.sh-howto ol{margin:0; padding-left:20px; color:var(--ink); line-height:1.6; font-size:14.5px}
+.sh-howto li{margin-bottom:4px}
+.sh-keys{display:flex; flex-wrap:wrap; gap:8px 14px; margin-top:14px; font-size:13.5px; color:var(--muted)}
+.sh-keys span{display:inline-flex; align-items:center; gap:7px}
+kbd{font:600 12px var(--ui); color:var(--ink); background:var(--surface-2); border:1px solid var(--line-2); border-bottom-width:2.5px; border-radius:7px; padding:3px 7px; min-width:24px; text-align:center}
+
+/* waiting */
+.sh-spin{width:64px; height:64px; border-radius:50%; border:5px solid var(--line); border-top-color:var(--accent); animation:shspin 1s linear infinite; margin:4px 0 18px}
+@keyframes shspin{to{transform:rotate(360deg)}}
+.sh-wait-title{font-family:var(--display); font-size:30px; margin:0; line-height:1.1}
+.sh-meta{color:var(--muted); font-size:14px; margin:6px 0 0; line-height:1.5}
+.sh-invite{display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:12px; background:var(--surface-2); border:1px dashed var(--line-2); font-size:13px}
+.sh-invite code{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace, Menlo, monospace; font-size:12.5px}
+.sh-invite button{border:0; background:var(--ink); color:var(--bg); border-radius:9px; padding:7px 11px; font-size:12.5px; font-weight:700}
+.dots::after{content:""; animation:shdots 1.6s steps(4) infinite}
+@keyframes shdots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+
+/* game */
+.sh-game{width:100%; max-width:1100px; display:flex; flex-direction:column; align-items:center; gap:12px}
+.sh-hud{width:100%; max-width:980px; display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center}
+.sh-pl{display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:9px 14px; box-shadow:var(--shadow); min-width:0}
+.sh-pl.r{flex-direction:row-reverse; text-align:right}
+.sh-dot{width:14px; height:14px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb, currentColor 25%, transparent)}
+.sh-pname{font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.sh-psub{font-size:12px; color:var(--muted)}
+.sh-pinfo{min-width:0; flex:1}
+.sh-pscore{font-family:var(--display); font-weight:800; font-size:30px; line-height:1}
+.sh-center{text-align:center; font-size:13px; color:var(--muted); font-weight:600; min-width:70px}
+.sh-center b{display:block; font-family:var(--display); font-size:18px; color:var(--ink)}
+.sh-stage{position:relative; width:100%; display:flex; justify-content:center}
+.sh-banner{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:20; pointer-events:none; font-family:var(--display); font-weight:800; font-size:clamp(34px, 7vw, 76px); color:#fff; text-shadow:0 4px 0 rgba(0,0,0,.25), 0 10px 30px rgba(0,0,0,.45); white-space:nowrap; animation:shban .9s cubic-bezier(.2,.9,.3,1.3)}
+.sh-banner small{display:block; font-size:.36em; text-align:center; font-weight:700; opacity:.92}
+@keyframes shban{from{transform:translate(-50%,-50%) scale(.4); opacity:0}}
+.sh-bar{width:100%; max-width:980px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap}
+.sh-bar .sh-keys{margin:0}
+.sh-small{border:1.5px solid var(--line-2); background:var(--surface); padding:8px 13px; border-radius:11px; font-size:13.5px; font-weight:700}
+
+/* overlay */
+.sh-ov{position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:16px; background:rgba(10,10,14,.45); backdrop-filter:blur(3px); animation:shfade .25s}
+@keyframes shfade{from{opacity:0}}
+.sh-ov .sh-card{margin:0; max-width:440px; animation:shrise .35s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes shrise{from{transform:translateY(16px) scale(.97); opacity:0}}
+.sh-rt{font-family:var(--display); font-weight:800; font-size:46px; line-height:1; margin:0 0 6px}
+.sh-rt.win{color:var(--good)} .sh-rt.lose{color:var(--bad)}
+.sh-rr{color:var(--muted); margin:0 0 18px; line-height:1.5}
+.sh-tally{display:flex; align-items:flex-end; gap:16px; margin:0 0 22px}
+.sh-tally b{font-family:var(--display); font-size:44px; line-height:1}
+.sh-tally div div{font-size:13px; color:var(--muted); font-weight:600}
+.sh-hint{font-size:13px; color:var(--accent); min-height:18px; margin-top:12px; font-weight:700}
+.sh-toast{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:12px; font-size:14px; z-index:70; animation:shtoast 2.6s forwards; max-width:calc(100vw - 32px); text-align:center}
+@keyframes shtoast{0%{opacity:0; transform:translate(-50%,10px)}10%,85%{opacity:1; transform:translate(-50%,0)}100%{opacity:0}}
+
+/* nút cảm ứng dùng chung */
+.touchpad{display:none; width:100%; max-width:980px; justify-content:space-between; gap:12px; user-select:none; -webkit-user-select:none; touch-action:none}
+.touchpad .grp{display:flex; gap:10px}
+.tbtn{width:64px; height:64px; border-radius:18px; border:1px solid var(--line-2); background:var(--surface); box-shadow:var(--shadow); font-size:24px; font-weight:800; display:grid; place-items:center; touch-action:none}
+.tbtn.on{background:var(--accent); color:var(--accent-ink)}
+@media (hover:none) and (pointer:coarse){ .touchpad{display:flex} }
+
+@media (max-width:620px){
+  .sh-app{padding:10px 12px 22px}
+  .sh-card{padding:22px 18px}
+  .sh-h1{font-size:30px}
+  .sh-thumb{width:64px; height:64px; border-radius:16px}
+  .sh-title{font-size:19px}
+  .sh-badge{display:none}
+  .sh-pl{padding:7px 10px; gap:8px}
+  .sh-pscore{font-size:24px}
+  .sh-pname{font-size:13.5px}
+}
+@media (prefers-reduced-motion: reduce){ *{animation-duration:.01ms !important; animation-iteration-count:1 !important} }
+@media (hover:none) and (pointer:coarse){ .sh-bar .sh-keys{display:none} }

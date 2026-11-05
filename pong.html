@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pong Neon — 2 người online</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+#stage{width:100%; display:flex; justify-content:center}
+.pong-wrap{position:relative; width:min(100%, 980px, calc((100svh - 230px) * 16 / 9)); aspect-ratio:16/9; border-radius:16px; overflow:hidden; background:#000; box-shadow:0 20px 50px -20px rgba(232,28,255,.55); touch-action:none; cursor:none}
+.pong-wrap canvas{position:absolute; inset:0; width:100%; height:100%; display:block}
+</style>
+</head>
+<body>
+<div id="stage"><div class="pong-wrap" id="wrap"><canvas id="cv"></canvas></div></div>
+
+<script src="shared/games.js"></script>
+<script src="shared/net.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(() => {
+'use strict';
+/* Toạ độ sân chuẩn (giống nhau ở 2 máy). Chủ phòng (host) đứng bên TRÁI, người vào sau bên PHẢI.
+   Mỗi người luôn thấy mình ở bên trái màn hình (máy guest được lật ngang khi vẽ).
+   Luật mạng: người ĐỠ bóng (bóng đang bay về phía ai) là người quyết định đỡ trúng hay để lọt → công bằng với độ trễ. */
+const W = 1000, H = 560, PH = 112, PW = 14, PX = 52, R = 9, WIN = 7;
+const LFACE = PX + PW / 2, RFACE = W - PX - PW / 2;
+const SPEED0 = 560, SPEEDMAX = 1350;
+const C_HOST = '#2cff4a', C_GUEST = '#ff2a2a', NEON = '#ff2bf0';
+
+const cv = document.getElementById('cv'), cx = cv.getContext('2d'), wrap = document.getElementById('wrap');
+let scale = 1, dpr = 1;
+function resize(){
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  const r = wrap.getBoundingClientRect();
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  scale = cv.width / W;
+}
+new ResizeObserver(resize).observe(wrap); resize();
+
+const G = {
+  running:false, myY:H/2, oppY:H/2, oppTarget:H/2, ball:null, live:false, hold:false,
+  s:[0,0], hits:0, keyDir:0, pointerY:null, lastSent:0, sentY:-1, particles:[], shake:0, trail:[], serveTimer:null
+};
+const isHost = () => Shell.isHost;
+const meIdx = () => isHost() ? 0 : 1;
+const mx = x => isHost() ? x : W - x;           // lật ngang cho guest
+
+function syncScore(){ Shell.setScore(G.s[meIdx()], G.s[1 - meIdx()]); Shell.hud({ center: 'Tới ' + WIN, centerSub: 'điểm' }); }
+
+/* ---------- vật lý bóng ---------- */
+function stepBall(b, dt){
+  let left = dt;
+  while (left > 0){
+    const h = Math.min(left, 1/240); left -= h;
+    b.x += b.vx * h; b.y += b.vy * h;
+    if (b.y < R){ b.y = R; b.vy = Math.abs(b.vy); if (G.running) Shell.sfx.wall(); }
+    if (b.y > H - R){ b.y = H - R; b.vy = -Math.abs(b.vy); if (G.running) Shell.sfx.wall(); }
+  }
+}
+function setBallFromMsg(m){
+  G.ball = { x:m.x, y:m.y, vx:m.vx, vy:m.vy };
+  stepBall(G.ball, Shell.lat() / 1000);   // bù độ trễ đường truyền
+  G.live = true; G.hold = false; G.hits = m.k || 0;
+}
+
+function serve(towardHost){
+  const ang = (Math.random() * .7 - .35);
+  const sp = SPEED0;
+  const dir = towardHost ? -1 : 1;
+  const b = { x: W/2, y: H/2 + (Math.random() * 160 - 80), vx: dir * sp * Math.cos(ang), vy: sp * Math.sin(ang) };
+  G.ball = { ...b }; G.live = true; G.hold = false; G.hits = 0;
+  Shell.send({ t:'b', ...b, k:0 });
+}
+
+function burst(x, y, color, n = 18){
+  for (let i = 0; i < n; i++){
+    const a = Math.random() * Math.PI * 2, s = 80 + Math.random() * 320;
+    G.particles.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:.5 + Math.random()*.4, t:0, color });
+  }
+}
+
+function update(dt){
+  // tay cầm của mình
+  if (G.keyDir) G.myY += G.keyDir * 780 * dt;
+  else if (G.pointerY != null) G.myY += (G.pointerY - G.myY) * Math.min(1, dt * 22);
+  G.myY = Math.max(PH/2, Math.min(H - PH/2, G.myY));
+  const now = performance.now();
+  if (now - G.lastSent > 40 && Math.abs(G.myY - G.sentY) > .5){ G.lastSent = now; G.sentY = G.myY; Shell.send({ t:'p', y: Math.round(G.myY) }, true); }
+  G.oppY += (G.oppTarget - G.oppY) * Math.min(1, dt * 18);
+
+  const b = G.ball;
+  if (G.live && b && !G.hold){
+    stepBall(b, dt);
+    const towardHost = b.vx < 0;
+    const iDefend = towardHost === isHost();
+    const myPaddleY = G.myY;
+    if (towardHost && b.x - R <= LFACE || !towardHost && b.x + R >= RFACE){
+      if (iDefend){
+        const near = Math.abs(b.y - myPaddleY) <= PH/2 + R * 0.9;
+        const faceX = towardHost ? LFACE : RFACE;
+        if (near && Math.abs(b.x - faceX) < R + 30){
+          // đỡ trúng
+          const rel = Math.max(-1, Math.min(1, (b.y - myPaddleY) / (PH/2)));
+          const sp = Math.min(SPEEDMAX, Math.hypot(b.vx, b.vy) * 1.06);
+          const ang = rel * 0.95;
+          const dir = towardHost ? 1 : -1;
+          b.x = towardHost ? LFACE + R : RFACE - R;
+          b.vx = dir * sp * Math.cos(ang); b.vy = sp * Math.sin(ang);
+          G.hits++;
+          Shell.send({ t:'b', x:b.x, y:b.y, vx:b.vx, vy:b.vy, k:G.hits });
+          Shell.sfx.hit(); burst(b.x, b.y, isHost() ? C_HOST : C_GUEST);
+        } else if (towardHost ? b.x < -R : b.x > W + R){
+          // để lọt → đối thủ ghi điểm
+          concede();
+        }
+      } else {
+        // không phải lượt mình đỡ: giữ bóng ở vạch chờ đối thủ báo kết quả
+        if (towardHost ? b.x - R <= LFACE - 2 : b.x + R >= RFACE + 2){
+          // bóng đã qua vạch trên máy mình nhưng chưa có kết quả → tiếp tục bay nhẹ ra ngoài cho tự nhiên tối đa 40px
+          if (towardHost ? b.x < LFACE - 40 : b.x > RFACE + 40) G.hold = true;
+        }
+      }
+    }
+  }
+  // hạt
+  G.particles = G.particles.filter(p => (p.t += dt) < p.life);
+  G.particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .96; p.vy *= .96; });
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 30);
+  if (G.live && b){ G.trail.push({ x:b.x, y:b.y }); if (G.trail.length > 14) G.trail.shift(); } else G.trail = [];
+}
+
+function concede(){
+  const scorer = isHost() ? 1 : 0;   // mình để lọt → người kia được điểm
+  G.s[scorer]++;
+  Shell.send({ t:'goal', s:G.s, x:G.ball.x, y:G.ball.y });
+  onGoal(G.s, G.ball.x, G.ball.y, true);
+}
+function onGoal(s, x, y, iConceded){
+  G.live = false; G.s = s.slice(); syncScore();
+  G.shake = 12; burst(Math.max(0, Math.min(W, x)), y, '#ffffff', 34);
+  const meScored = !iConceded;
+  meScored ? Shell.sfx.score() : Shell.sfx.miss();
+  const over = Math.max(G.s[0], G.s[1]) >= WIN;
+  if (over){
+    G.running = false;
+    const iWin = G.s[meIdx()] > G.s[1 - meIdx()];
+    Shell.result({ kind: iWin ? 'win' : 'lose', reason: iWin ? 'Bạn cán mốc ' + WIN + ' điểm trước!' : Shell.oppName + ' cán mốc ' + WIN + ' điểm trước.' });
+    return;
+  }
+  Shell.banner(meScored ? 'Ghi điểm!' : 'Lọt bóng!', G.s[meIdx()] + ' – ' + G.s[1 - meIdx()], 1000);
+  // người để lọt sẽ giao bóng tiếp (bóng bay về phía người đó)
+  if (iConceded){
+    clearTimeout(G.serveTimer);
+    G.serveTimer = setTimeout(() => { if (G.running) serve(isHost()); }, 1300);
+  }
+}
+
+/* ---------- vẽ ---------- */
+function draw(){
+  const s = scale;
+  cx.setTransform(1,0,0,1,0,0);
+  cx.fillStyle = '#000'; cx.fillRect(0, 0, cv.width, cv.height);
+  const sh = G.shake ? (Math.random() - .5) * G.shake * dpr : 0;
+  cx.setTransform(s, 0, 0, s, sh, sh * .6);
+  // nền tím mờ
+  const grd = cx.createRadialGradient(W/2, H/2, 40, W/2, H/2, W * .7);
+  grd.addColorStop(0, 'rgba(70,0,80,.0)'); grd.addColorStop(1, 'rgba(90,0,100,.55)');
+  cx.fillStyle = grd; cx.fillRect(0, 0, W, H);
+
+  cx.lineCap = 'round';
+  const neon = (fn, color, blur = 18) => { cx.save(); cx.shadowColor = color; cx.shadowBlur = blur; fn(); cx.restore(); };
+  // khung
+  neon(() => {
+    cx.strokeStyle = NEON; cx.lineWidth = 9;
+    cx.beginPath(); cx.moveTo(14, 8); cx.lineTo(W - 14, 8); cx.moveTo(14, H - 8); cx.lineTo(W - 14, H - 8);
+    cx.moveTo(8, 22); cx.lineTo(8, H - 22); cx.moveTo(W - 8, 22); cx.lineTo(W - 8, H - 22); cx.stroke();
+  }, NEON, 22);
+  // điểm
+  cx.fillStyle = '#353535'; cx.font = '700 170px "Baloo 2", system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillText(String(G.s[meIdx()]), W * .33, H / 2 + 8);
+  cx.fillText(String(G.s[1 - meIdx()]), W * .67, H / 2 + 8);
+  // vạch giữa + vòng tròn
+  neon(() => {
+    cx.strokeStyle = NEON; cx.lineWidth = 5;
+    cx.setLineDash([26, 20]); cx.beginPath(); cx.moveTo(W/2, 28); cx.lineTo(W/2, H/2 - 34); cx.moveTo(W/2, H/2 + 34); cx.lineTo(W/2, H - 28); cx.stroke();
+    cx.setLineDash([]); cx.beginPath(); cx.arc(W/2, H/2, 30, 0, Math.PI * 2); cx.stroke();
+  }, NEON, 16);
+  // tay cầm: mình luôn bên trái
+  const myC = isHost() ? C_HOST : C_GUEST, opC = isHost() ? C_GUEST : C_HOST;
+  const paddle = (x, y, c) => neon(() => {
+    cx.strokeStyle = c; cx.lineWidth = PW;
+    cx.beginPath(); cx.moveTo(x, y - PH/2 + PW/2); cx.lineTo(x, y + PH/2 - PW/2); cx.stroke();
+  }, c, 26);
+  paddle(PX, G.myY, myC); paddle(W - PX, G.oppY, opC);
+  // vệt bóng
+  G.trail.forEach((p, i) => {
+    cx.fillStyle = `rgba(255,255,255,${(i / G.trail.length) * .22})`;
+    cx.beginPath(); cx.arc(mx(p.x), p.y, R * (i / G.trail.length), 0, Math.PI * 2); cx.fill();
+  });
+  if (G.live && G.ball){
+    neon(() => { cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(mx(G.ball.x), G.ball.y, R, 0, Math.PI * 2); cx.fill(); }, '#ffffff', 24);
+  }
+  G.particles.forEach(p => {
+    cx.globalAlpha = 1 - p.t / p.life; cx.fillStyle = p.color;
+    cx.fillRect(mx(p.x) - 2, p.y - 2, 4, 4);
+  });
+  cx.globalAlpha = 1;
+  // nhãn
+  cx.font = '600 15px "Be Vietnam Pro", system-ui, sans-serif'; cx.fillStyle = 'rgba(255,255,255,.55)';
+  cx.textAlign = 'left'; cx.fillText('BẠN', 30, 40);
+  cx.textAlign = 'right'; cx.fillText((Shell.oppName || 'ĐỐI THỦ').toUpperCase(), W - 30, 40);
+}
+
+let last = performance.now(), raf = 0;
+function loop(t){
+  const dt = Math.min(1/30, (t - last) / 1000); last = t;
+  if (G.running) update(dt); else { G.particles = G.particles.filter(p => (p.t += dt) < p.life); }
+  draw();
+  raf = requestAnimationFrame(loop);
+}
+raf = requestAnimationFrame(loop);
+
+/* ---------- điều khiển ---------- */
+const keys = new Set();
+function updKeys(){ G.keyDir = (keys.has('down') ? 1 : 0) - (keys.has('up') ? 1 : 0); if (G.keyDir) G.pointerY = null; }
+const keyMap = { ArrowUp:'up', KeyW:'up', ArrowDown:'down', KeyS:'down' };
+addEventListener('keydown', e => { const k = keyMap[e.code]; if (k){ keys.add(k); updKeys(); e.preventDefault(); } });
+addEventListener('keyup', e => { const k = keyMap[e.code]; if (k){ keys.delete(k); updKeys(); } });
+function pointer(clientY){
+  const r = wrap.getBoundingClientRect();
+  G.pointerY = (clientY - r.top) / r.height * H;
+}
+wrap.addEventListener('pointermove', e => { if (!keys.size) pointer(e.clientY); });
+wrap.addEventListener('pointerdown', e => { pointer(e.clientY); });
+wrap.addEventListener('touchmove', e => { if (e.touches[0]) pointer(e.touches[0].clientY); e.preventDefault(); }, { passive:false });
+
+/* ---------- trận đấu ---------- */
+function resetMatch(){
+  clearTimeout(G.serveTimer);
+  G.s = [0, 0]; G.myY = G.oppY = G.oppTarget = H/2; G.ball = null; G.live = false; G.hold = false; G.particles = [];
+  syncScore();
+}
+function beginCountdown(){
+  G.running = true;
+  Shell.countdown(() => { if (isHost() && G.running) serve(Math.random() < .5); }, 'Đạt ' + WIN + ' điểm để thắng');
+}
+function startAsHost(){
+  resetMatch();
+  Shell.send({ t:'start' });
+  setTimeout(beginCountdown, Shell.lat());
+}
+
+Shell.init({
+  id: 'pong',
+  colors: [C_HOST, C_GUEST],
+  howto: [
+    'Mỗi người điều khiển một thanh đỡ. Trên màn hình của bạn, thanh của bạn luôn nằm <b>bên trái</b>.',
+    'Đỡ bóng bật lại về phía đối thủ. Đỡ trúng mép thanh thì bóng bay chéo gắt hơn.',
+    'Mỗi cú đỡ làm bóng nhanh thêm một chút. Ai để bóng lọt qua thanh của mình là mất điểm.',
+    'Ai đạt <b>7 điểm</b> trước là thắng trận.'
+  ],
+  keys: [[['W', 'S'], 'lên / xuống'], [['↑', '↓'], 'lên / xuống'], ['Chuột', 'rê lên xuống'], ['Cảm ứng', 'kéo trên sân']],
+  onStart(){ resetMatch(); if (isHost()) startAsHost(); },
+  onRematch(){ resetMatch(); if (isHost()) startAsHost(); },
+  onStop(){ G.running = false; G.live = false; clearTimeout(G.serveTimer); },
+  onMessage(m){
+    switch (m.t){
+      case 'start': resetMatch(); beginCountdown(); break;
+      case 'p': G.oppTarget = m.y; break;
+      case 'b': if (G.running){ setBallFromMsg(m); Shell.sfx.hit2(); burst(m.x, m.y, isHost() ? C_GUEST : C_HOST, 12); } break;
+      case 'goal': if (G.running || Math.max(...m.s) >= WIN) onGoal(m.s, m.x, m.y, false); break;
+    }
+  }
+});
+syncScore();
+})();
+</script>
+</body>
+</html>

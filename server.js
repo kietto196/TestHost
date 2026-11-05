@@ -8,7 +8,6 @@ const os = require('os');
 const path = require('path');
 
 const PORT = Number(process.env.PORT) || 3000;
-const INDEX = path.join(__dirname, 'index.html');
 
 const clients = new Map(); // id -> { id, res, partner }
 let waitingId = null;      // người đang chờ ghép trận
@@ -95,16 +94,20 @@ const server = http.createServer((req, res) => {
     res.writeHead(204); return res.end();
   }
 
-  if (p === '/' || p.endsWith('/') || p.endsWith('/index.html')) {
-    return fs.readFile(INDEX, (err, data) => {
-      if (err) { res.writeHead(500); return res.end('Không đọc được index.html'); }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(data);
-    });
+  // Phục vụ các file tĩnh trong thư mục (index.html, các game, shared/...)
+  const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' };
+  let rel = decodeURIComponent(p);
+  if (rel.endsWith('/')) rel += 'index.html';
+  const file = path.normalize(path.join(__dirname, rel));
+  if (!file.startsWith(__dirname + path.sep) || /[\\/]\./.test(rel) || path.basename(file) === 'server.js') {
+    res.writeHead(404); return res.end();
   }
-
-  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('Không tìm thấy');
+  fs.readFile(file, (err, data) => {
+    if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Không tìm thấy'); }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    res.end(data);
+  });
 });
 
 // Giữ kết nối sống qua proxy

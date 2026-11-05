@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cờ Caro — 2 người online</title>
+<meta name="description" content="Cờ caro 2 người chơi online — vào web là ghép trận.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23fffdf6'/%3E%3Cpath d='M20 22L48 50M48 22L20 50' stroke='%232550c8' stroke-width='9' stroke-linecap='round'/%3E%3Ccircle cx='66' cy='68' r='16' fill='none' stroke='%23d2382e' stroke-width='9'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#efe8d6; --paper:#fffdf6; --paper-2:#fbf6ea; --grid:#d6e0ee; --grid-strong:#b9c8de;
+  --ink:#1d2433; --muted:#6c6f78; --soft:#e7dfcb;
+  --x:#2550c8; --x-soft:rgba(37,80,200,.12);
+  --o:#d2382e; --o-soft:rgba(210,56,46,.12);
+  --hl:#f4cf57; --hl-soft:rgba(244,207,87,.45);
+  --margin:#e9a4a0;
+  --shadow:0 1px 0 rgba(0,0,0,.04), 0 10px 30px -12px rgba(60,45,15,.35);
+  --radius:18px;
+  --hand:'Patrick Hand', 'Comic Sans MS', cursive;
+  --ui:'Be Vietnam Pro', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10131b; --paper:#181d29; --paper-2:#1d2331; --grid:#283044; --grid-strong:#36405a;
+    --ink:#e8ebf2; --muted:#9097a8; --soft:#252c3c;
+    --x:#7aa2ff; --x-soft:rgba(122,162,255,.14);
+    --o:#ff7468; --o-soft:rgba(255,116,104,.14);
+    --hl:#e9c25a; --hl-soft:rgba(233,194,90,.22);
+    --margin:#6b3a3a;
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 14px 34px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10131b; --paper:#181d29; --paper-2:#1d2331; --grid:#283044; --grid-strong:#36405a;
+  --ink:#e8ebf2; --muted:#9097a8; --soft:#252c3c;
+  --x:#7aa2ff; --x-soft:rgba(122,162,255,.14);
+  --o:#ff7468; --o-soft:rgba(255,116,104,.14);
+  --hl:#e9c25a; --hl-soft:rgba(233,194,90,.22);
+  --margin:#6b3a3a;
+  --shadow:0 1px 0 rgba(255,255,255,.03), 0 14px 34px -14px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  font-family:var(--ui); color:var(--ink); background:var(--bg);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size:28px 28px; background-position:-1px -1px;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+body::before{ /* làm mờ lưới nền */
+  content:""; position:fixed; inset:0; background:var(--bg); opacity:.72; pointer-events:none; z-index:0;
+}
+button{font:inherit;color:inherit;cursor:pointer}
+.app{position:relative; z-index:1; min-height:100%; display:flex; flex-direction:column; align-items:center; padding:16px 16px 28px}
+
+/* ---------- Header ---------- */
+.top{width:100%; max-width:760px; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px}
+.top a.icon-btn{color:var(--ink); text-decoration:none}
+.brand{display:flex; align-items:center; gap:10px; font-family:var(--hand); font-size:28px; line-height:1; letter-spacing:.5px}
+.brand .logo{width:34px;height:34px}
+.brand b{font-weight:400}
+.brand b span{color:var(--o)}
+.tools{display:flex; gap:6px; align-items:center}
+.icon-btn{width:38px;height:38px;border-radius:12px;border:1px solid var(--soft);background:var(--paper);display:grid;place-items:center;box-shadow:var(--shadow);transition:transform .15s}
+.icon-btn:hover{transform:translateY(-1px)}
+.icon-btn svg{width:18px;height:18px}
+.mode{font-size:12px;color:var(--muted);padding:6px 10px;border-radius:999px;background:var(--paper);border:1px solid var(--soft);white-space:nowrap}
+.mode i{display:inline-block;width:7px;height:7px;border-radius:50%;background:#3bb36a;margin-right:6px;vertical-align:1px}
+
+/* ---------- Card (trang giấy) ---------- */
+.sheet{
+  position:relative; width:100%; max-width:460px; background:var(--paper); border-radius:var(--radius);
+  box-shadow:var(--shadow); padding:34px 28px 28px 46px; overflow:hidden;
+}
+.sheet::before{ /* lề đỏ vở học sinh */
+  content:""; position:absolute; top:0; bottom:0; left:28px; width:2px; background:var(--margin); opacity:.7;
+}
+.sheet::after{ /* dòng kẻ */
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background-image:linear-gradient(transparent 31px, var(--grid) 32px); background-size:100% 32px; opacity:.55;
+}
+.sheet > *{position:relative; z-index:1}
+.hero-title{font-family:var(--hand); font-size:64px; line-height:.95; margin:0 0 6px; font-weight:400}
+.hero-title .x{color:var(--x)} .hero-title .o{color:var(--o)}
+.hero-sub{color:var(--muted); margin:0 0 26px; font-size:15px; line-height:1.55}
+.field{display:block; font-size:13px; font-weight:600; color:var(--muted); margin-bottom:8px; letter-spacing:.2px}
+.input{
+  width:100%; font-family:var(--hand); font-size:26px; color:var(--ink); background:transparent;
+  border:0; border-bottom:2px dashed var(--grid-strong); padding:4px 2px 6px; outline:none; transition:border-color .2s;
+}
+.input:focus{border-bottom-color:var(--x)}
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:10px; border:0; border-radius:14px;
+  padding:14px 22px; font-weight:600; font-size:16px; transition:transform .15s, box-shadow .15s, background .2s;
+}
+.btn:active{transform:translateY(1px) scale(.99)}
+.btn-primary{background:var(--ink); color:var(--paper); box-shadow:0 8px 20px -10px rgba(0,0,0,.55)}
+.btn-primary:hover{transform:translateY(-1px)}
+.btn-ghost{background:transparent; border:1.5px solid var(--grid-strong)}
+.btn-ghost:hover{background:var(--paper-2)}
+.btn-block{width:100%}
+.row{display:flex; gap:10px; flex-wrap:wrap}
+.rules{display:flex; gap:18px; margin-top:22px; color:var(--muted); font-size:13px; flex-wrap:wrap}
+.rules span{display:flex; align-items:center; gap:6px}
+.rules b{font-family:var(--hand); font-weight:400; font-size:20px; color:var(--ink)}
+.stack{display:flex; flex-direction:column; gap:22px}
+
+/* ---------- Waiting ---------- */
+.wait-art{display:grid; grid-template-columns:repeat(3,46px); grid-template-rows:repeat(3,46px); gap:0; margin:4px 0 22px; width:max-content}
+.wait-art div{border-right:2px solid var(--ink); border-bottom:2px solid var(--ink); position:relative}
+.wait-art div:nth-child(3n){border-right:0}
+.wait-art div:nth-child(n+7){border-bottom:0}
+.wait-art svg{position:absolute; inset:7px; width:32px; height:32px; opacity:0; animation:wait-pop 4.8s infinite}
+.wait-art path{fill:none; stroke-width:9; stroke-linecap:round}
+@keyframes wait-pop{0%{opacity:0;transform:scale(.6)}6%{opacity:1;transform:scale(1)}80%{opacity:1}92%,100%{opacity:0}}
+.wait-title{font-family:var(--hand); font-size:38px; margin:0; line-height:1.05; font-weight:400}
+.dots::after{content:""; animation:dots 1.6s steps(4) infinite}
+@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+.wait-meta{color:var(--muted); font-size:14px; margin:8px 0 0}
+.invite{display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:12px; background:var(--paper-2); border:1px dashed var(--grid-strong); font-size:13px; color:var(--muted)}
+.invite code{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace, Menlo, monospace; color:var(--ink); font-size:12.5px}
+.invite button{border:0; background:var(--ink); color:var(--paper); border-radius:9px; padding:7px 11px; font-size:12.5px; font-weight:600}
+
+/* ---------- Game ---------- */
+.game{width:100%; max-width:760px; display:flex; flex-direction:column; align-items:center; gap:12px}
+.players{width:100%; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:10px}
+.player{
+  display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:16px; background:var(--paper);
+  box-shadow:var(--shadow); border:2px solid transparent; transition:border-color .25s, transform .25s; min-width:0;
+}
+.player.right{flex-direction:row-reverse; text-align:right}
+.player.active.X{border-color:var(--x)} .player.active.O{border-color:var(--o)}
+.player.active{transform:translateY(-2px)}
+.avatar{position:relative; width:46px; height:46px; flex:none}
+.avatar svg.ring{position:absolute; inset:0; transform:rotate(-90deg)}
+.avatar svg.ring circle{fill:none; stroke-width:3}
+.avatar .ring .bg{stroke:var(--soft)}
+.avatar .ring .fg{stroke-linecap:round; transition:stroke-dashoffset .2s linear, stroke .2s}
+.X .ring .fg{stroke:var(--x)} .O .ring .fg{stroke:var(--o)}
+.avatar .mark{position:absolute; left:9px; top:9px; width:calc(100% - 18px); height:calc(100% - 18px)}
+.pinfo{min-width:0}
+.pname{font-family:var(--hand); font-size:22px; line-height:1.05; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.psub{font-size:12px; color:var(--muted); margin-top:2px; white-space:nowrap}
+.psub.warn{color:var(--o); font-weight:600}
+.score{font-family:var(--hand); font-size:34px; line-height:1; margin-left:auto; padding-left:6px}
+.player.right .score{margin-left:0; margin-right:auto; padding-left:0; padding-right:6px}
+.vs{display:flex; flex-direction:column; align-items:center; gap:2px; font-family:var(--hand); color:var(--muted)}
+.vs b{font-size:15px; font-weight:400; letter-spacing:1px}
+.vs span{font-size:13px}
+
+.status{font-family:var(--hand); font-size:24px; min-height:30px; text-align:center; line-height:1.2}
+.status .me{color:var(--x)}
+
+.board-wrap{position:relative; width:min(100%, 640px, calc(100svh - 270px)); min-width:280px}
+.board{
+  position:relative; display:grid; grid-template-columns:repeat(15, 1fr); gap:1px; padding:1px;
+  background:var(--grid-strong); border-radius:10px; overflow:hidden; box-shadow:var(--shadow);
+  touch-action:manipulation;
+}
+.cell{
+  position:relative; aspect-ratio:1; border:0; padding:0; background:var(--paper); display:block;
+  -webkit-tap-highlight-color:transparent; transition:background .2s;
+}
+.cell.last{background:var(--hl-soft)}
+.cell.win{background:var(--hl-soft)}
+.board.myturn .cell:not(.filled):hover{background:var(--paper-2)}
+.board.myturn .cell:not(.filled):hover::after{
+  content:""; position:absolute; inset:28%; border-radius:50%; background:currentColor; opacity:.22;
+}
+.board.X{color:var(--x)} .board.O{color:var(--o)}
+.board:not(.myturn) .cell{cursor:default}
+.mark{display:block; width:100%; height:100%}
+.mark path{fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-width:11}
+.mark.X path{stroke:var(--x)} .mark.O path{stroke:var(--o)}
+.cell .mark{position:absolute; inset:12%; width:76%; height:76%}
+.cell .mark path{stroke-dasharray:1; stroke-dashoffset:1; animation:draw .32s ease-out forwards}
+.cell .mark.X path:nth-child(2){animation-delay:.14s}
+@keyframes draw{to{stroke-dashoffset:0}}
+.winline{position:absolute; inset:1px; width:calc(100% - 2px); height:calc(100% - 2px); pointer-events:none; overflow:visible}
+.winline line{stroke-linecap:round; stroke-width:.32; opacity:.85; stroke-dasharray:1; stroke-dashoffset:1; animation:draw .6s .1s ease-out forwards}
+
+.dock{display:flex; align-items:center; justify-content:space-between; gap:10px; width:min(100%, 640px)}
+.emos{display:flex; gap:4px; background:var(--paper); padding:5px; border-radius:14px; box-shadow:var(--shadow)}
+.emos button{border:0; background:transparent; font-size:20px; width:38px; height:36px; border-radius:10px; transition:transform .15s, background .15s}
+.emos button:hover{background:var(--paper-2); transform:scale(1.15)}
+.small-btn{border:1.5px solid var(--grid-strong); background:var(--paper); padding:9px 14px; border-radius:12px; font-size:14px; font-weight:600}
+.small-btn.danger{color:var(--o); border-color:var(--o)}
+
+.float-emo{position:fixed; font-size:40px; pointer-events:none; z-index:60; animation:floatup 1.8s ease-out forwards}
+@keyframes floatup{0%{opacity:0; transform:translate(-50%,10px) scale(.5)}15%{opacity:1; transform:translate(-50%,0) scale(1.15)}100%{opacity:0; transform:translate(-50%,-110px) scale(1)}}
+
+/* ---------- Overlay ---------- */
+.overlay{position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:16px; background:rgba(20,18,12,.38); backdrop-filter:blur(3px); animation:fade .25s}
+@keyframes fade{from{opacity:0}}
+.overlay .sheet{animation:rise .35s cubic-bezier(.2,.9,.3,1.2); text-align:left}
+@keyframes rise{from{transform:translateY(18px) scale(.97); opacity:0}}
+.result-title{font-family:var(--hand); font-size:56px; line-height:1; margin:0 0 6px; font-weight:400}
+.result-title.win{color:var(--x)} .result-title.lose{color:var(--o)}
+.result-reason{color:var(--muted); margin:0 0 18px}
+.tally{display:flex; align-items:center; gap:16px; font-family:var(--hand); font-size:22px; margin:0 0 22px}
+.tally b{font-size:44px; font-weight:400; line-height:1}
+.tally .sep{color:var(--muted)}
+.hint{font-size:13px; color:var(--x); min-height:18px; margin-top:12px; font-weight:600}
+
+.toast{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--ink); color:var(--paper); padding:10px 16px; border-radius:12px; font-size:14px; z-index:70; box-shadow:var(--shadow); animation:toast 2.6s forwards; white-space:nowrap; max-width:calc(100vw - 32px); overflow:hidden; text-overflow:ellipsis}
+@keyframes toast{0%{opacity:0; transform:translate(-50%,10px)}10%,85%{opacity:1; transform:translate(-50%,0)}100%{opacity:0}}
+
+.confetti{position:fixed; top:-12px; width:9px; height:14px; z-index:50; pointer-events:none; border-radius:2px; animation:fall linear forwards}
+@keyframes fall{to{transform:translateY(105vh) rotate(720deg)}}
+
+.hidden{display:none !important}
+
+@media (max-width:560px){
+  .app{padding:12px 12px 22px}
+  .sheet{padding:28px 20px 22px 38px}
+  .sheet::before{left:22px}
+  .hero-title{font-size:52px}
+  .players{gap:6px}
+  .player{padding:8px 9px; gap:8px; border-radius:14px}
+  .avatar{width:38px; height:38px}
+  .avatar .mark{left:8px; top:8px; width:calc(100% - 16px); height:calc(100% - 16px)}
+  .brand b span{display:none}
+  .result-title{font-size:44px}
+  .pname{font-size:18px}
+  .score{font-size:28px}
+  .vs b{font-size:13px}
+  .board-wrap{width:min(100%, calc(100svh - 250px))}
+  .emos button{width:32px; font-size:18px}
+  .brand{font-size:24px}
+}
+@media (prefers-reduced-motion: reduce){ *{animation-duration:.01ms !important; animation-iteration-count:1 !important} }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="icon-btn" href="./" id="homeBtn" title="Trang chủ" aria-label="Trang chủ" style="margin-right:2px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></a>
+    <div class="brand" style="flex:1">
+      <svg class="logo" viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" rx="24" fill="var(--paper)"/><path d="M22 24L50 52M50 24L22 52" stroke="var(--x)" stroke-width="9" stroke-linecap="round"/><circle cx="66" cy="68" r="16" fill="none" stroke="var(--o)" stroke-width="9"/></svg>
+      <b>Cờ Caro <span>online</span></b>
+    </div>
+    <div class="tools">
+      <span class="mode" id="modeBadge"><i></i>Đang kết nối…</span>
+      <button class="icon-btn" id="soundBtn" title="Bật/tắt âm thanh" aria-label="Bật/tắt âm thanh"></button>
+      <button class="icon-btn" id="themeBtn" title="Đổi nền sáng/tối" aria-label="Đổi nền sáng/tối">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Màn hình bắt đầu -->
+  <main id="viewLobby" class="sheet" style="margin-top:6vh">
+    <h1 class="hero-title"><span class="x">X</span> đấu <span class="o">O</span></h1>
+    <p class="hero-sub">Cờ caro hai người, mỗi người một máy. Vào trang là tự ghép trận với người đang chờ.</p>
+    <div class="stack">
+      <div>
+        <label class="field" for="nameInput">Tên của bạn</label>
+        <input class="input" id="nameInput" maxlength="18" autocomplete="nickname" placeholder="Nhập tên…">
+      </div>
+      <button class="btn btn-primary btn-block" id="findBtn">
+        Tìm đối thủ
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <div class="rules">
+      <span><b>15×15</b> bàn cờ</span>
+      <span><b>5</b> quân liên tiếp là thắng</span>
+      <span><b>30s</b> mỗi lượt</span>
+    </div>
+  </main>
+
+  <!-- Màn hình chờ -->
+  <main id="viewWait" class="sheet hidden" style="margin-top:6vh">
+    <div class="wait-art" id="waitArt"></div>
+    <h2 class="wait-title">Đang chờ đối thủ<span class="dots"></span></h2>
+    <p class="wait-meta">Bạn đang ở hàng chờ · <span id="waitTime">0:00</span></p>
+    <div class="stack" style="margin-top:22px">
+      <div class="invite">
+        <code id="inviteUrl"></code>
+        <button id="copyBtn">Chép link</button>
+      </div>
+      <p class="wait-meta" style="margin:0">Gửi link cho bạn bè — ngay khi có người thứ hai vào trang, trận đấu sẽ bắt đầu.</p>
+      <button class="btn btn-ghost btn-block" id="cancelBtn">Huỷ</button>
+    </div>
+  </main>
+
+  <!-- Màn hình chơi -->
+  <section id="viewGame" class="game hidden">
+    <div class="players">
+      <div class="player" id="cardMe">
+        <div class="avatar"><svg class="ring" viewBox="0 0 46 46"><circle class="bg" cx="23" cy="23" r="21"/><circle class="fg" cx="23" cy="23" r="21"/></svg><span class="markbox"></span></div>
+        <div class="pinfo"><div class="pname" id="meName">Bạn</div><div class="psub" id="meSub">Bạn</div></div>
+        <div class="score" id="meScore">0</div>
+      </div>
+      <div class="vs"><b>VS</b><span id="gameNo">Ván 1</span></div>
+      <div class="player right" id="cardOpp">
+        <div class="avatar"><svg class="ring" viewBox="0 0 46 46"><circle class="bg" cx="23" cy="23" r="21"/><circle class="fg" cx="23" cy="23" r="21"/></svg><span class="markbox"></span></div>
+        <div class="pinfo"><div class="pname" id="oppName">Đối thủ</div><div class="psub" id="oppSub">Đối thủ</div></div>
+        <div class="score" id="oppScore">0</div>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="board-wrap">
+      <div class="board" id="board" role="grid" aria-label="Bàn cờ caro"></div>
+    </div>
+    <div class="dock">
+      <div class="emos" id="emos">
+        <button data-e="👍">👍</button><button data-e="😂">😂</button><button data-e="😮">😮</button><button data-e="😤">😤</button><button data-e="🔥">🔥</button>
+      </div>
+      <button class="small-btn danger" id="resignBtn">Xin thua</button>
+    </div>
+  </section>
+</div>
+
+<!-- Kết quả -->
+<div class="overlay hidden" id="resultOverlay">
+  <div class="sheet">
+    <h2 class="result-title" id="resultTitle"></h2>
+    <p class="result-reason" id="resultReason"></p>
+    <div class="tally">
+      <div><b class="x-c" id="tMe">0</b><div style="font-size:15px;color:var(--muted)" id="tMeName">Bạn</div></div>
+      <span class="sep">—</span>
+      <div><b id="tOpp">0</b><div style="font-size:15px;color:var(--muted)" id="tOppName">Đối thủ</div></div>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" id="rematchBtn" style="flex:1">Chơi lại</button>
+      <button class="btn btn-ghost" id="newOppBtn">Đối thủ khác</button>
+    </div>
+    <div class="hint" id="rematchHint"></div>
+  </div>
+</div>
+
+<!-- Đối thủ rời -->
+<div class="overlay hidden" id="leftOverlay">
+  <div class="sheet">
+    <h2 class="result-title" style="font-size:44px">Đối thủ đã rời trận</h2>
+    <p class="result-reason" id="leftReason">Người chơi kia đã thoát hoặc mất kết nối.</p>
+    <div class="row">
+      <button class="btn btn-primary" id="leftFindBtn" style="flex:1">Tìm trận mới</button>
+      <button class="btn btn-ghost" id="leftHomeBtn">Về trang chính</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const N = 15, WIN = 5, TURN_MS = 30000;
+const $ = s => document.querySelector(s);
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+};
+const rid = () => Math.random().toString(36).slice(2,10) + Date.now().toString(36);
+
+/* ===================== Âm thanh ===================== */
+let ac = null, muted = store.get('caro-muted') === '1';
+function tone(f, d = .09, type = 'sine', v = .07, delay = 0){
+  if (muted) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const t = ac.currentTime + delay, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + d + .02);
+  } catch(e){}
+}
+const sfx = {
+  place(){ tone(620,.06,'triangle',.06); },
+  opp(){ tone(440,.07,'triangle',.06); },
+  match(){ tone(523,.12,'sine',.07); tone(784,.16,'sine',.07,.12); },
+  win(){ [523,659,784,1046].forEach((f,i)=>tone(f,.18,'sine',.07,i*.11)); },
+  lose(){ [392,330,262].forEach((f,i)=>tone(f,.2,'sine',.06,i*.14)); },
+  tick(){ tone(900,.03,'square',.025); }
+};
+function renderSoundBtn(){
+  $('#soundBtn').innerHTML = muted
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m23 9-6 6M17 9l6 6"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>';
+}
+$('#soundBtn').onclick = () => { muted = !muted; store.set('caro-muted', muted ? '1' : '0'); renderSoundBtn(); };
+renderSoundBtn();
+
+/* ===================== Giao diện sáng/tối ===================== */
+const savedTheme = store.get('caro-theme');
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next; store.set('caro-theme', next);
+};
+
+/* ===================== Hình quân cờ ===================== */
+function markSVG(sym){
+  return sym === 'X'
+    ? '<svg class="mark X" viewBox="0 0 100 100"><path pathLength="1" d="M20 22 C 40 42, 60 62, 80 80"/><path pathLength="1" d="M80 20 C 60 40, 42 60, 21 79"/></svg>'
+    : '<svg class="mark O" viewBox="0 0 100 100"><path pathLength="1" d="M54 18 C 74 18, 84 34, 83 51 C 82 70, 67 83, 49 82 C 30 81, 17 67, 18 49 C 19 31, 33 18, 56 21"/></svg>';
+}
+
+/* ===================== Kết nối: máy chủ (SSE) ===================== */
+function serverTransport(cb){
+  let es = null, id = null, closed = true;
+  return {
+    mode: 'server',
+    start(){
+      id = rid(); closed = false;
+      es = new EventSource('api/events?id=' + id);
+      es.onmessage = e => {
+        let d; try { d = JSON.parse(e.data); } catch(_){ return; }
+        if (d.type === 'waiting') cb.onWaiting();
+        else if (d.type === 'matched') cb.onMatched(d.role);
+        else if (d.type === 'msg') cb.onMessage(d.msg);
+        else if (d.type === 'left') cb.onLeft();
+      };
+      es.onerror = () => {
+        if (closed) return;
+        closed = true; es.close();
+        cb.onError('Mất kết nối tới máy chủ.');
+      };
+    },
+    send(msg){
+      if (!id || closed) return;
+      fetch('api/send', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id, msg }), keepalive:true }).catch(()=>{});
+    },
+    stop(){
+      if (closed) return;
+      closed = true;
+      if (es) { es.close(); es = null; }
+      fetch('api/leave?id=' + id, { method:'POST', keepalive:true }).catch(()=>{});
+    }
+  };
+}
+
+/* ===================== Kết nối Online (máy chủ MQTT công cộng, chơi được khác mạng) ===================== */
+const BROKERS = (new URLSearchParams(location.search).get('broker') ||
+  'wss://broker.emqx.io:8084/mqtt,wss://broker.hivemq.com:8884/mqtt').split(',');
+const TOPIC = 'kietto196-testhost/caro/v2/';
+let mqttLib = null;
+function loadMqtt(){
+  if (mqttLib) return mqttLib;
+  mqttLib = new Promise((res, rej) => {
+    if (window.mqtt) return res(window.mqtt);
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
+    s.onload = () => res(window.mqtt); s.onerror = () => { mqttLib = null; rej(); };
+    document.head.appendChild(s);
+  });
+  return mqttLib;
+}
+function connectBroker(lib, id, idx = 0){
+  return new Promise((res, rej) => {
+    if (idx >= BROKERS.length) return rej(new Error('no broker'));
+    let c, done = false;
+    const fail = () => { if (done) return; done = true; clearTimeout(to); try { c.end(true); } catch(e){} connectBroker(lib, id, idx + 1).then(res, rej); };
+    const to = setTimeout(fail, 8000);
+    try {
+      c = lib.connect(BROKERS[idx], {
+        clientId: 'caro_' + id, clean: true, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 7000,
+        will: { topic: TOPIC + 'gone/' + id, payload: '1', qos: 0, retain: false }
+      });
+    } catch(e){ return fail(); }
+    c.once('connect', () => { if (done) return; done = true; clearTimeout(to); res(c); });
+    c.on('error', () => { if (!done) fail(); });
+  });
+}
+
+function onlineTransport(cb){
+  let gen = 0, c = null, me = null, opp = null, state = 'idle', lobbyVal = null;
+  let joinTarget = null, joinTimer = null, hb = null, seen = 0;
+  const tried = new Set();
+  const pub = (topic, obj, opts = { qos:1 }) => {
+    try { if (c) c.publish(TOPIC + topic, obj == null ? '' : JSON.stringify(obj), opts); } catch(e){}
+  };
+  const toUser = (id, obj) => pub('u/' + id, Object.assign({ f: me }, obj));
+  const enterLobby = () => pub('lobby', { id: me, name: S.myName, ts: Date.now() }, { qos:1, retain:true });
+  setInterval(() => { if (state === 'waiting' && c) enterLobby(); }, 25000);
+
+  // Xem "phòng chờ": có người đang chờ → xin vào trận; trống → mình đứng chờ.
+  function decide(){
+    if (state === 'matched' || state === 'idle' || state === 'connecting') return;
+    const v = lobbyVal;
+    if (v && v.id && v.id !== me && !tried.has(v.id)){
+      state = 'joining'; joinTarget = v.id;
+      toUser(v.id, { t:'join' });
+      clearTimeout(joinTimer);
+      joinTimer = setTimeout(() => {
+        if (state === 'joining' && joinTarget === v.id){ tried.add(v.id); decide(); }
+      }, 6000);
+    } else {
+      state = 'waiting'; joinTarget = null; enterLobby(); cb.onWaiting();
+    }
+  }
+  function matchWith(id, role){
+    state = 'matched'; opp = id; clearTimeout(joinTimer); seen = Date.now();
+    try { c.subscribe(TOPIC + 'gone/' + id, { qos:0 }); } catch(e){}
+    if (lobbyVal && lobbyVal.id === me) pub('lobby', null, { qos:1, retain:true });
+    hb = setInterval(() => {
+      toUser(opp, { t:'ping' });
+      if (Date.now() - seen > 20000) lost();
+    }, 5000);
+    cb.onMatched(role);
+  }
+  function lost(){ if (state !== 'matched') return; shutdown(); cb.onLeft(); }
+  function shutdown(){
+    gen++; clearInterval(hb); hb = null; clearTimeout(joinTimer);
+    if (c){
+      if (state === 'waiting' && (!lobbyVal || lobbyVal.id === me)) pub('lobby', null, { qos:1, retain:true });
+      const old = c; c = null;
+      setTimeout(() => { try { old.end(false); } catch(e){} }, 50);
+    }
+    state = 'idle'; opp = null;
+  }
+
+  return {
+    mode: 'online',
+    async start(){
+      if (c) shutdown();
+      const g = ++gen;
+      state = 'connecting'; me = rid(); opp = null; lobbyVal = null; tried.clear();
+      let client;
+      try { const lib = await loadMqtt(); client = await connectBroker(lib, me); }
+      catch(e){ if (g === gen){ state = 'idle'; cb.onError('Không kết nối được máy chủ ghép trận online.', true); } return; }
+      if (g !== gen){ try { client.end(true); } catch(e){} return; }
+      c = client;
+      client.on('message', (topic, buf) => {
+        if (g !== gen) return;
+        const t = topic.slice(TOPIC.length), s = buf.toString();
+        if (t === 'lobby'){
+          let v = null; try { v = s ? JSON.parse(s) : null; } catch(e){}
+          lobbyVal = v;
+          if (state === 'waiting'){
+            if (!v) enterLobby();              // ai đó xoá nhầm → đứng chờ lại
+            else if (v.id !== me) decide();    // có người vừa vào chờ → ghép với họ
+          }
+          return;
+        }
+        if (opp && t === 'gone/' + opp) return lost();
+        if (t !== 'u/' + me) return;
+        let m; try { m = JSON.parse(s); } catch(e){ return; }
+        if (!m || !m.f) return;
+        if (m.t === 'join'){
+          const mutual = state === 'joining' && m.f === joinTarget; // hai người xin vào trận của nhau cùng lúc
+          if (state === 'waiting' || (mutual && me < m.f)){ toUser(m.f, { t:'accept' }); matchWith(m.f, 'host'); }
+          else if (mutual) { /* người kia sẽ chấp nhận */ }
+          else if (m.f !== opp) toUser(m.f, { t:'busy' });
+          return;
+        }
+        if (m.t === 'accept'){
+          if (state === 'joining' && m.f === joinTarget) matchWith(m.f, 'guest');
+          else if (m.f !== opp) toUser(m.f, { t:'g', m:{ t:'leave' } });
+          return;
+        }
+        if (m.t === 'busy'){
+          if (state === 'joining' && m.f === joinTarget){
+            clearTimeout(joinTimer); state = 'deciding';
+            setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 700 + Math.random() * 900);
+          }
+          return;
+        }
+        if (m.f !== opp) return;
+        seen = Date.now();
+        if (m.t === 'g') cb.onMessage(m.m);
+      });
+      client.on('connect', () => { if (g === gen) seen = Date.now(); }); // kết nối lại sau khi rớt mạng
+      client.subscribe([TOPIC + 'u/' + me, TOPIC + 'lobby'], { qos:1 }, () => {
+        if (g !== gen) return;
+        state = 'deciding';
+        setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 900);
+      });
+    },
+    send(msg){ if (state === 'matched' && opp) toUser(opp, { t:'g', m:msg }); },
+    stop(){ shutdown(); }
+  };
+}
+
+// Ưu tiên kết nối online; nếu không vào được máy chủ online thì dùng server.js (nếu đang chạy).
+function autoTransport(cb){
+  const srvP = hasServer();
+  let cur = null;
+  const setBadge = online => {
+    $('#modeBadge').innerHTML = '<i></i>' + (online ? 'Online' : 'Máy chủ nội bộ');
+    $('#modeBadge').title = online ? 'Ghép trận qua Internet — chơi được với người ở mạng khác'
+                                   : 'Ghép trận qua server.js — chỉ người vào được máy chủ này mới chơi cùng';
+  };
+  const online = onlineTransport(Object.assign({}, cb, {
+    async onError(text, connectFail){
+      if (connectFail && cur === online && await srvP && S.phase === 'waiting'){
+        cur = serverTransport(cb); setBadge(false); cur.start();
+      } else cb.onError(text);
+    }
+  }));
+  setBadge(true);
+  return {
+    start(){ cur = online; setBadge(true); online.start(); },
+    send(m){ if (cur) cur.send(m); },
+    stop(){ if (cur) cur.stop(); }
+  };
+}
+
+async function hasServer(){
+  if (location.protocol === 'file:') return false;
+  try {
+    const r = await fetch('api/ping', { cache:'no-store' });
+    if (!r.ok) return false;
+    const j = await r.json(); return j && j.caro === true;
+  } catch(e){ return false; }
+}
+
+/* ===================== Trò chơi ===================== */
+const S = {
+  phase:'lobby', net:null, mySym:'X', oppSym:'O', myName:'', oppName:'Đối thủ',
+  board:[], turn:'X', moves:0, over:false, gameNo:0, score:{ me:0, opp:0 },
+  deadline:0, last:-1, rematchMe:false, rematchOpp:false, waitStart:0
+};
+const cb = {
+  onWaiting(){ if (S.phase === 'waiting') return; },
+  onMatched(role){ matched(role); },
+  onMessage(m){ handle(m); },
+  onLeft(){ opponentLeft('Người chơi kia đã thoát hoặc mất kết nối.'); },
+  onError(t){
+    if (S.phase === 'waiting') { show('lobby'); toast(t); }
+    else if (S.phase === 'playing' || S.phase === 'over') opponentLeft(t);
+  }
+};
+
+function show(view){
+  S.phase = view === 'game' ? S.phase : view;
+  $('#viewLobby').classList.toggle('hidden', view !== 'lobby');
+  $('#viewWait').classList.toggle('hidden', view !== 'waiting');
+  $('#viewGame').classList.toggle('hidden', view !== 'game');
+  if (view !== 'game') { $('#resultOverlay').classList.add('hidden'); $('#leftOverlay').classList.add('hidden'); }
+}
+function toast(t){
+  document.querySelectorAll('.toast').forEach(n => n.remove());
+  const el = document.createElement('div'); el.className = 'toast'; el.textContent = t;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 2700);
+}
+
+/* ----- Chờ ----- */
+function buildWaitArt(){
+  const seq = [4,0,8,2,6,1,7,3,5]; // thứ tự hiện quân
+  const art = $('#waitArt'); art.innerHTML = '';
+  for (let i = 0; i < 9; i++) art.appendChild(document.createElement('div'));
+  seq.forEach((cell, k) => {
+    const sym = k % 2 ? 'O' : 'X';
+    const s = document.createElement('div');
+    s.innerHTML = sym === 'X'
+      ? '<svg viewBox="0 0 100 100"><path d="M20 20L80 80M80 20L20 80" stroke="var(--x)"/></svg>'
+      : '<svg viewBox="0 0 100 100"><path d="M50 18a32 32 0 1 0 .1 0" stroke="var(--o)"/></svg>';
+    const svg = s.firstChild; svg.style.animationDelay = (k * .42) + 's';
+    art.children[cell].appendChild(svg);
+  });
+}
+function findMatch(){
+  const name = ($('#nameInput').value || '').trim().slice(0,18) || 'Người chơi';
+  S.myName = name; store.set('caro-name', name);
+  S.phase = 'waiting'; S.waitStart = Date.now();
+  show('waiting');
+  const isFile = location.protocol === 'file:';
+  $('#inviteUrl').textContent = isFile ? 'Gửi file index.html này cho bạn bè' : location.href.split('#')[0].split('?')[0];
+  $('#copyBtn').classList.toggle('hidden', isFile);
+  S.net.start();
+}
+$('#findBtn').onclick = () => { if (S.net) findMatch(); };
+$('#nameInput').addEventListener('keydown', e => { if (e.key === 'Enter' && S.net) findMatch(); });
+$('#cancelBtn').onclick = () => { S.net.stop(); show('lobby'); };
+$('#copyBtn').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#inviteUrl').textContent); toast('Đã chép link mời'); }
+  catch(e){ toast('Hãy chép link thủ công'); }
+};
+
+/* ----- Ghép trận ----- */
+function matched(role){
+  S.mySym = role === 'host' ? 'X' : 'O';
+  S.oppSym = S.mySym === 'X' ? 'O' : 'X';
+  S.oppName = 'Đối thủ'; S.score = { me:0, opp:0 }; S.gameNo = 0;
+  S.net.send({ t:'hello', name:S.myName });
+  $('#cardMe').className = 'player ' + S.mySym;
+  $('#cardOpp').className = 'player right ' + S.oppSym;
+  $('#cardMe .markbox').innerHTML = markSVG(S.mySym);
+  $('#cardOpp .markbox').innerHTML = markSVG(S.oppSym);
+  $('#meName').textContent = S.myName;
+  $('#oppName').textContent = S.oppName;
+  sfx.match();
+  S.phase = 'playing'; show('game');
+  newGame();
+  toast('Đã ghép trận! Bạn cầm quân ' + S.mySym);
+}
+
+function buildBoard(){
+  const b = $('#board'); b.innerHTML = '';
+  for (let i = 0; i < N * N; i++){
+    const c = document.createElement('button');
+    c.className = 'cell'; c.dataset.i = i;
+    c.setAttribute('aria-label', 'Ô ' + (Math.floor(i / N) + 1) + '-' + (i % N + 1));
+    b.appendChild(c);
+  }
+}
+buildBoard();
+$('#board').addEventListener('click', e => {
+  const c = e.target.closest('.cell'); if (!c) return;
+  const i = +c.dataset.i;
+  if (S.phase !== 'playing' || S.over || S.turn !== S.mySym || S.board[i]) return;
+  place(i, S.mySym);
+  S.net.send({ t:'move', i, n:S.moves });
+});
+
+function newGame(){
+  S.gameNo++; S.board = new Array(N * N).fill(null); S.moves = 0; S.over = false; S.last = -1;
+  S.turn = S.gameNo % 2 ? 'X' : 'O';
+  S.rematchMe = S.rematchOpp = false; S.phase = 'playing';
+  document.querySelectorAll('.cell').forEach(c => { c.className = 'cell'; c.innerHTML = ''; });
+  const wl = document.querySelector('.winline'); if (wl) wl.remove();
+  $('#resultOverlay').classList.add('hidden');
+  $('#gameNo').textContent = 'Ván ' + S.gameNo;
+  $('#resignBtn').textContent = 'Xin thua'; $('#resignBtn').disabled = false;
+  updateScores(); startTurn();
+  if (S.gameNo > 1) toast('Ván ' + S.gameNo + ' · ' + (S.turn === S.mySym ? 'Bạn' : S.oppName) + ' đi trước');
+}
+function startTurn(){ S.deadline = Date.now() + TURN_MS; S.lastTick = -1; renderTurn(); }
+
+function place(i, sym){
+  S.board[i] = sym; S.moves++;
+  const cells = document.querySelectorAll('.cell');
+  if (S.last >= 0) cells[S.last].classList.remove('last');
+  cells[i].classList.add('filled', 'last'); cells[i].innerHTML = markSVG(sym);
+  S.last = i;
+  sym === S.mySym ? sfx.place() : sfx.opp();
+  const w = checkWin(i, sym);
+  if (w) return endGame(sym === S.mySym ? 'win' : 'lose', sym === S.mySym ? 'Bạn có 5 quân liên tiếp.' : S.oppName + ' có 5 quân liên tiếp.', w);
+  if (S.moves === N * N) return endGame('draw', 'Bàn cờ đã kín.');
+  S.turn = sym === 'X' ? 'O' : 'X';
+  startTurn();
+}
+
+function checkWin(i, sym){
+  const r = Math.floor(i / N), c = i % N;
+  for (const [dr, dc] of [[0,1],[1,0],[1,1],[1,-1]]){
+    const line = [[r,c]];
+    for (const s of [1,-1]){
+      let rr = r + dr*s, cc = c + dc*s;
+      while (rr >= 0 && rr < N && cc >= 0 && cc < N && S.board[rr*N+cc] === sym){
+        s === 1 ? line.push([rr,cc]) : line.unshift([rr,cc]);
+        rr += dr*s; cc += dc*s;
+      }
+    }
+    if (line.length >= WIN) return line;
+  }
+  return null;
+}
+
+function endGame(result, reason, line){
+  if (S.over) return;
+  S.over = true; S.phase = 'over';
+  if (result === 'win') S.score.me++; else if (result === 'lose') S.score.opp++;
+  updateScores(); renderTurn();
+  $('#resignBtn').disabled = true;
+  if (line){
+    const cells = document.querySelectorAll('.cell');
+    line.forEach(([r,c]) => cells[r*N+c].classList.add('win'));
+    const a = line[0], b = line[line.length - 1];
+    const col = result === 'win' ? (S.mySym === 'X' ? 'var(--x)' : 'var(--o)') : (S.oppSym === 'X' ? 'var(--x)' : 'var(--o)');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'winline'); svg.setAttribute('viewBox', `0 0 ${N} ${N}`); svg.setAttribute('preserveAspectRatio', 'none');
+    svg.innerHTML = `<line pathLength="1" x1="${a[1]+.5}" y1="${a[0]+.5}" x2="${b[1]+.5}" y2="${b[0]+.5}" stroke="${col}"/>`;
+    $('#board').parentNode.appendChild(svg);
+  }
+  result === 'win' ? sfx.win() : result === 'lose' ? sfx.lose() : sfx.match();
+  if (result === 'win') confetti();
+  setTimeout(() => {
+    if (S.phase !== 'over') return;
+    const t = $('#resultTitle');
+    t.className = 'result-title ' + result;
+    t.textContent = result === 'win' ? 'Thắng rồi!' : result === 'lose' ? 'Thua mất rồi…' : 'Hoà!';
+    $('#resultReason').textContent = reason;
+    $('#tMe').textContent = S.score.me; $('#tOpp').textContent = S.score.opp;
+    $('#tMeName').textContent = S.myName; $('#tOppName').textContent = S.oppName;
+    $('#tMe').style.color = S.mySym === 'X' ? 'var(--x)' : 'var(--o)';
+    $('#tOpp').style.color = S.oppSym === 'X' ? 'var(--x)' : 'var(--o)';
+    $('#rematchBtn').disabled = false; $('#rematchBtn').textContent = 'Chơi lại';
+    $('#rematchHint').textContent = S.rematchOpp ? S.oppName + ' muốn chơi ván nữa!' : '';
+    $('#resultOverlay').classList.remove('hidden');
+  }, line ? 1100 : 500);
+}
+
+function updateScores(){ $('#meScore').textContent = S.score.me; $('#oppScore').textContent = S.score.opp; }
+
+const CIRC = 2 * Math.PI * 21;
+function renderTurn(){
+  const mine = S.turn === S.mySym;
+  const b = $('#board');
+  b.className = 'board ' + S.mySym + (mine && !S.over && S.phase === 'playing' ? ' myturn' : '');
+  $('#cardMe').classList.toggle('active', mine && !S.over);
+  $('#cardOpp').classList.toggle('active', !mine && !S.over);
+  const st = $('#status');
+  if (S.over) st.textContent = 'Ván đấu kết thúc';
+  else if (mine) st.innerHTML = '<span class="me" style="color:var(--' + S.mySym.toLowerCase() + ')">Đến lượt bạn!</span>';
+  else st.textContent = S.oppName + ' đang suy nghĩ…';
+  tickTimer();
+}
+function tickTimer(){
+  const left = Math.max(0, S.deadline - Date.now());
+  const frac = left / TURN_MS, secs = Math.ceil(left / 1000);
+  const mine = S.turn === S.mySym;
+  const set = (card, sub, active, label) => {
+    const fg = $(card + ' .ring .fg');
+    fg.style.strokeDasharray = CIRC;
+    fg.style.strokeDashoffset = active ? CIRC * (1 - frac) : 0;
+    fg.style.opacity = active ? 1 : .25;
+    const el = $(sub);
+    el.textContent = active ? 'Còn ' + secs + 's' : label;
+    el.classList.toggle('warn', active && secs <= 10);
+  };
+  const live = !S.over && S.phase === 'playing';
+  set('#cardMe', '#meSub', live && mine, 'Bạn · quân ' + S.mySym);
+  set('#cardOpp', '#oppSub', live && !mine, 'Quân ' + S.oppSym);
+  if (!live) return;
+  if (mine && secs <= 5 && secs !== S.lastTick && left > 0) { S.lastTick = secs; sfx.tick(); }
+  if (mine && left <= 0){
+    S.net.send({ t:'timeout' });
+    endGame('lose', 'Bạn đã hết 30 giây suy nghĩ.');
+  }
+}
+setInterval(() => {
+  if (S.phase === 'playing') tickTimer();
+  if (S.phase === 'waiting'){
+    const s = Math.floor((Date.now() - S.waitStart) / 1000);
+    $('#waitTime').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+}, 200);
+
+/* ----- Tin nhắn từ đối thủ ----- */
+function handle(m){
+  if (!m || typeof m !== 'object') return;
+  switch (m.t){
+    case 'hello':
+      S.oppName = String(m.name || 'Đối thủ').slice(0,18);
+      $('#oppName').textContent = S.oppName; renderTurn(); break;
+    case 'move': {
+      const i = m.i | 0;
+      if (S.over || S.turn !== S.oppSym || i < 0 || i >= N*N || S.board[i]) return;
+      place(i, S.oppSym); break;
+    }
+    case 'timeout':
+      if (!S.over) endGame('win', S.oppName + ' đã hết thời gian.'); break;
+    case 'resign':
+      if (!S.over) endGame('win', S.oppName + ' xin thua.'); break;
+    case 'rematch':
+      S.rematchOpp = true;
+      if (S.rematchMe && S.over) newGame();
+      else $('#rematchHint').textContent = S.oppName + ' muốn chơi ván nữa!';
+      break;
+    case 'emo': floatEmo(String(m.e).slice(0,4), '#cardOpp'); break;
+    case 'leave': opponentLeft('Người chơi kia đã thoát.'); break;
+  }
+}
+
+function opponentLeft(reason){
+  if (S.phase !== 'playing' && S.phase !== 'over') return;
+  S.phase = 'left'; S.over = true;
+  try { S.net.stop(); } catch(e){}
+  renderTurn();
+  $('#resultOverlay').classList.add('hidden');
+  $('#leftReason').textContent = reason;
+  $('#leftOverlay').classList.remove('hidden');
+}
+
+/* ----- Nút ----- */
+$('#rematchBtn').onclick = () => {
+  if (S.phase !== 'over') return;
+  S.rematchMe = true; S.net.send({ t:'rematch' });
+  if (S.rematchOpp) return newGame();
+  $('#rematchBtn').disabled = true; $('#rematchBtn').textContent = 'Đang chờ ' + S.oppName + '…';
+};
+$('#newOppBtn').onclick = () => { S.net.send({ t:'leave' }); S.net.stop(); findMatch(); };
+$('#leftFindBtn').onclick = () => findMatch();
+$('#leftHomeBtn').onclick = () => show('lobby');
+let resignArm = 0;
+$('#resignBtn').onclick = () => {
+  if (S.over || S.phase !== 'playing') return;
+  if (Date.now() - resignArm > 3000){
+    resignArm = Date.now(); $('#resignBtn').textContent = 'Chắc chưa?';
+    setTimeout(() => { if (!S.over) $('#resignBtn').textContent = 'Xin thua'; }, 3000); return;
+  }
+  S.net.send({ t:'resign' }); endGame('lose', 'Bạn đã xin thua.');
+};
+$('#emos').onclick = e => {
+  const b = e.target.closest('button'); if (!b || S.phase === 'left') return;
+  S.net.send({ t:'emo', e:b.dataset.e }); floatEmo(b.dataset.e, '#cardMe');
+};
+function floatEmo(e, from){
+  const r = $(from).getBoundingClientRect();
+  const el = document.createElement('div'); el.className = 'float-emo'; el.textContent = e;
+  el.style.left = (r.left + r.width / 2) + 'px'; el.style.top = (r.bottom - 10) + 'px';
+  document.body.appendChild(el); setTimeout(() => el.remove(), 1900);
+}
+function confetti(){
+  const cols = ['var(--x)','var(--o)','var(--hl)','#3bb36a'];
+  for (let k = 0; k < 46; k++){
+    const c = document.createElement('div'); c.className = 'confetti';
+    c.style.left = Math.random() * 100 + 'vw'; c.style.background = cols[k % 4];
+    c.style.animationDuration = (1.6 + Math.random() * 1.6) + 's';
+    c.style.animationDelay = (Math.random() * .4) + 's';
+    c.style.transform = 'rotate(' + (Math.random() * 360) + 'deg)';
+    document.body.appendChild(c); setTimeout(() => c.remove(), 3800);
+  }
+}
+window.addEventListener('pagehide', () => {
+  if (S.net && (S.phase === 'playing' || S.phase === 'over')) S.net.send({ t:'leave' });
+  if (S.net && S.phase !== 'lobby') S.net.stop();
+});
+
+/* ----- Khởi động ----- */
+$('#nameInput').value = store.get('caro-name') || '';
+buildWaitArt();
+S.net = autoTransport(cb);
+document.getElementById('homeBtn').href = './' + location.search;
+loadMqtt().catch(() => {});
+})();
+</script>
+</body>
+</html>

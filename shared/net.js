@@ -1,0 +1,193 @@
+/* Ghép trận online cho mọi game — dùng máy chủ MQTT công cộng (chơi được khác mạng).
+ *
+ *   const net = Net.create('pong', {
+ *     onWaiting(), onMatched(role /* 'host' | 'guest' *\/), onMessage(msg), onLeft(), onError(text)
+ *   });
+ *   net.start('Tên');  net.send({...}, fast);  net.stop();  net.rtt  (ms)
+ *
+ *  fast = true → gửi QoS 0 (nhanh, dùng cho vị trí liên tục); mặc định QoS 1 (chắc chắn tới, đúng thứ tự).
+ */
+(function () {
+  'use strict';
+  const Q = new URLSearchParams(location.search);
+  const BROKERS = (Q.get('broker') || 'wss://broker.emqx.io:8084/mqtt,wss://broker.hivemq.com:8884/mqtt').split(',');
+  const ROOT = 'kietto196-testhost/';
+  const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+  let mqttLib = null;
+  function loadMqtt() {
+    if (mqttLib) return mqttLib;
+    mqttLib = new Promise((res, rej) => {
+      if (window.mqtt) return res(window.mqtt);
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
+      s.onload = () => res(window.mqtt);
+      s.onerror = () => { mqttLib = null; rej(new Error('load')); };
+      document.head.appendChild(s);
+    });
+    return mqttLib;
+  }
+
+  function connectBroker(lib, clientId, will, idx = 0) {
+    return new Promise((res, rej) => {
+      if (idx >= BROKERS.length) return rej(new Error('no broker'));
+      let c, done = false;
+      const fail = () => {
+        if (done) return; done = true; clearTimeout(to);
+        try { c.end(true); } catch (e) {}
+        connectBroker(lib, clientId, will, idx + 1).then(res, rej);
+      };
+      const to = setTimeout(fail, 8000);
+      try {
+        c = lib.connect(BROKERS[idx], {
+          clientId, clean: true, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 7000, will
+        });
+      } catch (e) { return fail(); }
+      c.once('connect', () => { if (done) return; done = true; clearTimeout(to); res(c); });
+      c.on('error', () => { if (!done) fail(); });
+    });
+  }
+
+  function create(gameId, cb) {
+    const TOPIC = ROOT + gameId + '/v1/';
+    let gen = 0, c = null, me = null, opp = null, state = 'idle', lobbyVal = null, myName = '';
+    let joinTarget = null, joinTimer = null, hb = null, refresh = null, seen = 0;
+    const tried = new Set();
+    const api = { rtt: 120, role: null, get state() { return state; } };
+
+    const pub = (topic, obj, opts = { qos: 1 }) => {
+      try { if (c) c.publish(TOPIC + topic, obj == null ? '' : JSON.stringify(obj), opts); } catch (e) {}
+    };
+    const toUser = (id, obj, opts) => pub('u/' + id, Object.assign({ f: me }, obj), opts);
+    const enterLobby = () => pub('lobby', { id: me, name: myName, ts: Date.now() }, { qos: 1, retain: true });
+
+    function decide() {
+      if (state === 'matched' || state === 'idle' || state === 'connecting') return;
+      const v = lobbyVal;
+      if (v && v.id && v.id !== me && !tried.has(v.id)) {
+        state = 'joining'; joinTarget = v.id;
+        toUser(v.id, { t: 'join', name: myName });
+        clearTimeout(joinTimer);
+        joinTimer = setTimeout(() => {
+          if (state === 'joining' && joinTarget === v.id) { tried.add(v.id); decide(); }
+        }, 6000);
+      } else {
+        state = 'waiting'; joinTarget = null; enterLobby();
+        clearInterval(refresh); refresh = setInterval(() => { if (state === 'waiting') enterLobby(); }, 25000);
+        cb.onWaiting && cb.onWaiting();
+      }
+    }
+    function matchWith(id, role) {
+      state = 'matched'; opp = id; api.role = role; clearTimeout(joinTimer); clearInterval(refresh); seen = Date.now();
+      try { c.subscribe(TOPIC + 'gone/' + id, { qos: 0 }); } catch (e) {}
+      if (lobbyVal && lobbyVal.id === me) pub('lobby', null, { qos: 1, retain: true });
+      hb = setInterval(() => {
+        toUser(opp, { t: 'ping', ts: performance.now() }, { qos: 0 });
+        if (Date.now() - seen > 20000) lost();
+      }, 2000);
+      cb.onMatched && cb.onMatched(role);
+    }
+    function lost() { if (state !== 'matched') return; shutdown(); cb.onLeft && cb.onLeft(); }
+    function shutdown() {
+      gen++; clearInterval(hb); clearInterval(refresh); clearTimeout(joinTimer); hb = refresh = null;
+      if (c) {
+        if (state === 'waiting' && (!lobbyVal || lobbyVal.id === me)) pub('lobby', null, { qos: 1, retain: true });
+        const old = c; c = null;
+        setTimeout(() => { try { old.end(false); } catch (e) {} }, 60);
+      }
+      state = 'idle'; opp = null;
+    }
+
+    api.start = async function (name) {
+      if (c) shutdown();
+      const g = ++gen;
+      myName = String(name || '').slice(0, 18);
+      state = 'connecting'; me = rid(); opp = null; lobbyVal = null; tried.clear(); api.role = null;
+      let client;
+      try {
+        const lib = await loadMqtt();
+        client = await connectBroker(lib, gameId + '_' + me, { topic: TOPIC + 'gone/' + me, payload: '1', qos: 0, retain: false });
+      } catch (e) {
+        if (g === gen) { state = 'idle'; cb.onError && cb.onError('Không kết nối được máy chủ ghép trận online. Kiểm tra Internet rồi thử lại.'); }
+        return;
+      }
+      if (g !== gen) { try { client.end(true); } catch (e) {} return; }
+      c = client;
+      client.on('message', (topic, buf) => {
+        if (g !== gen) return;
+        const t = topic.slice(TOPIC.length), s = buf.toString();
+        if (t === 'lobby') {
+          let v = null; try { v = s ? JSON.parse(s) : null; } catch (e) {}
+          lobbyVal = v;
+          if (state === 'waiting') {
+            if (!v) enterLobby();
+            else if (v.id !== me) decide();
+          }
+          return;
+        }
+        if (opp && t === 'gone/' + opp) return lost();
+        if (t !== 'u/' + me) return;
+        let m; try { m = JSON.parse(s); } catch (e) { return; }
+        if (!m || !m.f) return;
+        if (m.t === 'join') {
+          const mutual = state === 'joining' && m.f === joinTarget;
+          if (state === 'waiting' || (mutual && me < m.f)) { toUser(m.f, { t: 'accept' }); matchWith(m.f, 'host'); }
+          else if (mutual) { /* bên kia sẽ chấp nhận */ }
+          else if (m.f !== opp) toUser(m.f, { t: 'busy' });
+          return;
+        }
+        if (m.t === 'accept') {
+          if (state === 'joining' && m.f === joinTarget) matchWith(m.f, 'guest');
+          else if (m.f !== opp) toUser(m.f, { t: 'g', m: { t: '_leave' } });
+          return;
+        }
+        if (m.t === 'busy') {
+          if (state === 'joining' && m.f === joinTarget) {
+            clearTimeout(joinTimer); state = 'deciding';
+            setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 700 + Math.random() * 900);
+          }
+          return;
+        }
+        if (m.f !== opp) return;
+        seen = Date.now();
+        if (m.t === 'ping') { toUser(opp, { t: 'pong', ts: m.ts }, { qos: 0 }); return; }
+        if (m.t === 'pong') {
+          const r = performance.now() - m.ts;
+          if (r >= 0 && r < 5000) api.rtt = api.rtt * 0.7 + r * 0.3;
+          return;
+        }
+        if (m.t === 'g') cb.onMessage && cb.onMessage(m.m);
+      });
+      client.on('connect', () => { if (g === gen) seen = Date.now(); });
+      client.subscribe([TOPIC + 'u/' + me, TOPIC + 'lobby'], { qos: 1 }, () => {
+        if (g !== gen) return;
+        state = 'deciding';
+        setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 900);
+      });
+    };
+    api.send = function (msg, fast) {
+      if (state === 'matched' && opp) toUser(opp, { t: 'g', m: msg }, { qos: fast ? 0 : 1 });
+    };
+    api.stop = function () { shutdown(); };
+    return api;
+  }
+
+  /* Theo dõi phòng chờ của nhiều game (dùng ở trang chủ để báo "có người đang chờ") */
+  async function watchLobbies(gameIds, onChange) {
+    try {
+      const lib = await loadMqtt();
+      const c = await connectBroker(lib, 'hub_' + rid());
+      c.on('message', (topic, buf) => {
+        const m = topic.match(/^kietto196-testhost\/([^/]+)\/v\d+\/lobby$/);
+        if (!m) return;
+        let v = null; try { v = buf.length ? JSON.parse(buf.toString()) : null; } catch (e) {}
+        const fresh = v && v.id && (!v.ts || Math.abs(Date.now() - v.ts) < 70000);
+        onChange(m[1], fresh ? v : null);
+      });
+      c.subscribe(gameIds.map(g => ROOT + g + (g === 'caro' ? '/v2/lobby' : '/v1/lobby')), { qos: 0 });
+      return c;
+    } catch (e) { return null; }
+  }
+
+  window.Net = { create, watchLobbies, loadMqtt };
+})();
