@@ -131,7 +131,7 @@ footer{margin:26px 0 6px; color:var(--muted); font-size:13px; text-align:center}
       </div>
     </a>`).join('');
   document.getElementById('count').textContent = GAMES.length + ' game';
-  document.getElementById('heroArt').innerHTML = GAMES.slice(1).map(g => `<div class="t">${g.thumb}</div>`).join('');
+  document.getElementById('heroArt').innerHTML = GAMES.slice(1, 6).map(g => `<div class="t">${g.thumb}</div>`).join('');
 
   // Báo "có người đang chờ" theo thời gian thực
   Net.watchLobbies(GAMES.map(g => g.id), (id, v) => {

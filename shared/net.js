@@ -5,7 +5,7 @@
  *   });
  *   net.start('Tên');  net.send({...}, fast);  net.stop();  net.rtt  (ms)
  *
- *  fast = true → gửi QoS 0 (nhanh, dùng cho vị trí liên tục); mặc định QoS 1 (chắc chắn tới, đúng thứ tự).
+ *  fast = true → gửi nhanh, có thể mất (dùng cho vị trí liên tục); mặc định: tin cậy — đánh số, báo nhận, tự gửi lại, đúng thứ tự.
  */
 (function () {
   'use strict';
@@ -52,6 +52,35 @@
     const TOPIC = ROOT + gameId + '/v1/';
     let gen = 0, c = null, me = null, opp = null, state = 'idle', lobbyVal = null, myName = '';
     let joinTarget = null, joinTimer = null, hb = null, refresh = null, seen = 0;
+    // Kênh tin cậy tự làm (đánh số + báo nhận + gửi lại) — không phụ thuộc QoS của máy chủ công cộng
+    let sendSeq = 0, recvNext = 1, unacked = new Map(), recvBuf = new Map(), rtx = null, ackTimer = null;
+    function resetChannel() {
+      sendSeq = 0; recvNext = 1; unacked = new Map(); recvBuf = new Map();
+      clearInterval(rtx); rtx = null; clearTimeout(ackTimer); ackTimer = null;
+    }
+    function sendAck() {
+      if (ackTimer) return;
+      ackTimer = setTimeout(() => { ackTimer = null; if (opp) toUser(opp, { t: 'ack', a: recvNext - 1 }, { qos: 0 }); }, 15);
+    }
+    function onReliable(m) {
+      const n = m.s | 0;
+      if (n >= recvNext && !recvBuf.has(n)) recvBuf.set(n, m.m);
+      while (recvBuf.has(recvNext)) {
+        const msg = recvBuf.get(recvNext); recvBuf.delete(recvNext); recvNext++;
+        try { cb.onMessage && cb.onMessage(msg); } catch (e) { console.error(e); }
+      }
+      sendAck();
+    }
+    function retransmit() {
+      if (state !== 'matched' || !opp) return;
+      const now = performance.now(), wait = Math.max(250, Math.min(1500, api.rtt * 1.6));
+      let sent = 0;
+      for (const [n, e] of unacked) {
+        if (now - e.at < wait) continue;
+        e.at = now; toUser(opp, { t: 'r', s: n, m: e.m }, { qos: 0 });
+        if (++sent >= 12) break;
+      }
+    }
     const tried = new Set();
     const api = { rtt: 120, role: null, get state() { return state; } };
 
@@ -78,6 +107,7 @@
       }
     }
     function matchWith(id, role) {
+      resetChannel(); rtx = setInterval(retransmit, 120);
       state = 'matched'; opp = id; api.role = role; clearTimeout(joinTimer); clearInterval(refresh); seen = Date.now();
       try { c.subscribe(TOPIC + 'gone/' + id, { qos: 0 }); } catch (e) {}
       if (lobbyVal && lobbyVal.id === me) pub('lobby', null, { qos: 1, retain: true });
@@ -92,9 +122,21 @@
       gen++; clearInterval(hb); clearInterval(refresh); clearTimeout(joinTimer); hb = refresh = null;
       if (c) {
         if (state === 'waiting' && (!lobbyVal || lobbyVal.id === me)) pub('lobby', null, { qos: 1, retain: true });
-        const old = c; c = null;
-        setTimeout(() => { try { old.end(false); } catch (e) {} }, 60);
+        const old = c, wasMatched = state === 'matched' && opp, o = opp, myId = me, pend = [...unacked];
+        c = null;
+        let delay = 60;
+        if (wasMatched) {
+          // gửi nốt các tin chưa được báo nhận (vd. "_leave") vài lần rồi báo "đã rời" trước khi ngắt
+          const flush = () => pend.forEach(([n, e]) => {
+            try { old.publish(TOPIC + 'u/' + o, JSON.stringify({ f: myId, t: 'r', s: n, m: e.m }), { qos: 0 }); } catch (er) {}
+          });
+          flush(); setTimeout(flush, 180); setTimeout(flush, 400);
+          setTimeout(() => { try { old.publish(TOPIC + 'gone/' + myId, '1', { qos: 1 }); } catch (er) {} }, 450);
+          delay = 900;
+        }
+        setTimeout(() => { try { old.end(false); } catch (e) {} }, delay);
       }
+      resetChannel();
       state = 'idle'; opp = null;
     }
 
@@ -156,6 +198,12 @@
           if (r >= 0 && r < 5000) api.rtt = api.rtt * 0.7 + r * 0.3;
           return;
         }
+        if (m.t === 'r') return onReliable(m);
+        if (m.t === 'ack') {
+          const a = m.a | 0;
+          for (const n of [...unacked.keys()]) if (n <= a) unacked.delete(n);
+          return;
+        }
         if (m.t === 'g') cb.onMessage && cb.onMessage(m.m);
       });
       client.on('connect', () => { if (g === gen) seen = Date.now(); });
@@ -166,7 +214,11 @@
       });
     };
     api.send = function (msg, fast) {
-      if (state === 'matched' && opp) toUser(opp, { t: 'g', m: msg }, { qos: fast ? 0 : 1 });
+      if (state !== 'matched' || !opp) return;
+      if (fast) return toUser(opp, { t: 'g', m: msg }, { qos: 0 });
+      const n = ++sendSeq;
+      unacked.set(n, { m: msg, at: performance.now() });
+      toUser(opp, { t: 'r', s: n, m: msg }, { qos: 0 });
     };
     api.stop = function () { shutdown(); };
     return api;

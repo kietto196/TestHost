@@ -1,0 +1,1360 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Người Nhũn Vượt Ải — 2 người online</title>
+<link rel="stylesheet" href="shared/shell.css">
+<style>
+#stage{width:100%; display:flex; flex-direction:column; align-items:center; gap:12px}
+.rg-wrap{position:relative; width:min(100%, 1100px, calc((100svh - 230px) * 16 / 9)); aspect-ratio:16/9; border-radius:18px; overflow:hidden; background:#cfe3f5;
+  box-shadow:0 22px 50px -24px rgba(61,139,253,.55), 0 0 0 1px rgba(0,0,0,.08); touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair}
+.rg-wrap canvas{position:absolute; inset:0; width:100%; height:100%; display:block}
+.rg-rs{position:absolute; right:10px; top:10px; z-index:5; border:1px solid rgba(255,255,255,.5); background:rgba(255,255,255,.55); color:#3b3552; font:600 12.5px/1 var(--ui);
+  padding:7px 10px; border-radius:10px; backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); cursor:pointer}
+.rg-rs:hover{background:rgba(255,255,255,.8)}
+.rg-tpad{align-items:center}
+.rg-stick{position:relative; width:132px; height:132px; border-radius:50%; background:var(--surface); border:1px solid var(--line-2); box-shadow:var(--shadow); touch-action:none; flex:none}
+.rg-stick::before{content:""; position:absolute; inset:22px; border-radius:50%; border:1.5px dashed var(--line-2)}
+.rg-knob{position:absolute; left:50%; top:50%; width:54px; height:54px; margin:-27px 0 0 -27px; border-radius:50%; background:var(--accent); box-shadow:0 6px 14px -6px var(--accent); pointer-events:none}
+.rg-btns{display:grid; grid-template-columns:repeat(2, 64px); grid-template-rows:repeat(2, 58px); gap:9px}
+.rg-btns .tbtn{width:64px; height:58px; font-size:13px; font-weight:800; line-height:1.1; text-align:center; padding:2px}
+.rg-btns .tbtn.big{font-size:15px}
+@media (hover:none) and (pointer:coarse){
+  .rg-wrap{aspect-ratio:auto; width:100%; height:calc(100svh - 352px); min-height:280px; cursor:default}
+  .rg-rs{display:none}
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="rg-wrap" id="wrap"><canvas id="cv"></canvas><button class="rg-rs" id="rgRs" title="Về điểm hồi sinh (phím R)">↻ Hồi sinh</button></div>
+  <div class="touchpad rg-tpad" id="tpad">
+    <div class="rg-stick" id="stick"><div class="rg-knob" id="knob"></div></div>
+    <div class="rg-btns">
+      <button class="tbtn" data-k="l" aria-label="Bám tay trái">Bám<br>trái</button>
+      <button class="tbtn" data-k="r" aria-label="Bám tay phải">Bám<br>phải</button>
+      <button class="tbtn" data-k="rs" aria-label="Hồi sinh">↻</button>
+      <button class="tbtn big" data-k="j" aria-label="Nhảy">Nhảy</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script src="shared/games.js"></script>
+<script src="shared/net.js"></script>
+<script src="shared/shell.js"></script>
+<script>
+(() => {
+'use strict';
+/* Người Nhũn Vượt Ải — phối hợp 2 người, góc nhìn ngang, vật lý Matter.js.
+   Mạng: CHỦ PHÒNG chạy toàn bộ mô phỏng (bước cố định 1/60 s) cho cả hai nhân vật và mọi vật thể.
+   Người vào sau chỉ gửi trạng thái điều khiển (di chuyển, nhảy, bám trái/phải, hướng tay) khi thay đổi + ~12 lần/s khi ngắm.
+   Chủ phòng gửi ảnh chụp gọn (vị trí/góc làm tròn) ~20 lần/s (QoS0) và sự kiện tin cậy (điểm hồi sinh, rơi, qua màn).
+   Máy người vào sau vẽ trễ ~100 ms và nội suy giữa hai ảnh chụp. */
+
+const M = window.Matter;
+const { Engine, Bodies, Body, Composite, Constraint, Query } = M;
+const DT = 1000 / 60, DT2 = DT * DT, GF = 0.001;          // GF: lực trọng trường trên 1 đơn vị khối lượng
+const RUN = 2.8, JUMP_V = 7, SNAP_EVERY = 3, INTERP_TICKS = 6;
+const CAT_STATIC = 1, CAT_DYN = 2, CAT_CHAR = 4, CAT_ARM = 8, CAT_MISC = 16;
+const C_HOST = '#d8cbb3', C_GUEST = '#ffc21f';
+const PAL = [
+  { main: '#f8f4ec', shade: '#d9cfbe', deep: '#b7ab97', shoe: '#8d7f9e' },
+  { main: '#ffd54a', shade: '#eaa925', deep: '#c98516', shoe: '#6f5aa8' }
+];
+const SIGC = ['#4fc3e8', '#ff8fb8', '#a48cff', '#7fd49a'];
+
+/* ---------- các màn ----------
+   solids: [x, y(top), w, h, loại: g=đảo cỏ, s=đá, w=gỗ, u=độ sâu chóp đá phía dưới]
+   need: danh sách tín hiệu, chỉ cần 1 tín hiệu bật (p# = bàn nhấn, l# = cần gạt) */
+const LEVELS = [
+  {
+    name: 'Bình minh trên mây', w: 2700, deathY: 980, sky: 0,
+    spawn: [140, 600],
+    solids: [
+      [-200, 600, 640, 120, 'g', 150], [440, 480, 350, 160, 'g', 170], [790, 529, 58, 111, 's', 90], [848, 480, 452, 160, 'g', 190],
+      [900, -400, 120, 730, 's', 0],
+      [1400, 520, 420, 130, 'g', 170], [1920, 290, 780, 310, 'g', 220]
+    ],
+    boxes: [[690, 480, 48, 2.6, 'w']],
+    plates: [[792, 529, 54, 0]],
+    doors: [{ x: 940, y: 330, w: 40, h: 150, dx: 0, dy: -140, need: ['p0'], c: 0 }],
+    movers: [{ x: 1822, y: 520, w: 94, h: 16, dx: 0, dy: -230, need: ['l0'], c: 1, lift: 1 }],
+    bridges: [], seesaws: [], ropes: [],
+    levers: [{ x: 2030, y: 290, c: 1 }],
+    cps: [[140, 600], [600, 480], [1480, 520], [2080, 290]],
+    exit: [2520, 290],
+    signs: [
+      [300, 455, 'Bám mép rồi giữ W để đu người lên\nGiữ chuột trái / phải (J / K) để bám', 'Giữ nút Bám để bám mép\nGiữ Nhảy để đu người lên'],
+      [730, 360, 'Đẩy thùng xuống hố bàn nhấn để mở cửa', 'Đẩy thùng xuống hố bàn nhấn để mở cửa'],
+      [1350, 400, 'Lấy đà rồi nhảy qua!', 'Lấy đà rồi nhảy qua!'],
+      [1700, 360, 'Vách quá cao: đứng lên đầu bạn để với tới,\nrồi gạt cần trên đỉnh để hạ thang máy', 'Vách quá cao: đứng lên đầu bạn để với tới,\nrồi gạt cần trên đỉnh để hạ thang máy']
+    ]
+  },
+  {
+    name: 'Bập bênh và cầu gỗ', w: 2760, deathY: 1000, sky: 1,
+    spawn: [110, 600],
+    solids: [
+      [-200, 600, 1700, 130, 'g', 200], [300, 440, 120, 26, 'w', 30],
+      [760, 370, 500, 130, 'g', 0],
+      [1800, 600, 452, 130, 'g', 200], [2252, 666, 72, 64, 's', 110], [2324, 600, 436, 130, 'g', 200], [2430, -400, 80, 830, 's', 0]
+    ],
+    boxes: [[336, 440, 44, 3.2, 'w'], [2060, 600, 62, 10, 'h']],
+    plates: [[1900, 600, 76, 0], [2254, 666, 68, 1]],
+    doors: [
+      { x: 772, y: 500, w: 34, h: 100, dx: 0, dy: -96, need: ['l0'], c: 2 },
+      { x: 2450, y: 430, w: 40, h: 170, dx: 0, dy: -160, need: ['p1'], c: 1 }
+    ],
+    movers: [],
+    bridges: [{ px: 1500, py: 608, len: 300, th: 16, a0: -Math.PI / 2, a1: 0, need: ['l1', 'p0'], c: 0 }],
+    seesaws: [{ x: 590, y: 545, len: 320, a: -0.3 }],
+    ropes: [],
+    levers: [{ x: 1000, y: 370, c: 2 }, { x: 1410, y: 600, c: 0, spring: 1 }],
+    cps: [[110, 600], [1100, 600], [1880, 600]],
+    exit: [2620, 600],
+    signs: [
+      [360, 360, 'Một người đứng đầu phải bập bênh,\nngười kia đẩy thùng xuống đầu trái rồi nhảy theo', 'Một người đứng đầu phải bập bênh,\nngười kia đẩy thùng xuống đầu trái rồi nhảy theo'],
+      [1000, 270, 'Gạt cần mở đường hầm', 'Gạt cần mở đường hầm'],
+      [1420, 470, 'Giữ chặt cần gạt để hạ cầu', 'Giữ chặt cần gạt để hạ cầu'],
+      [2150, 470, 'Khối đá nặng: cần cả hai cùng đẩy xuống hố', 'Khối đá nặng: cần cả hai cùng đẩy xuống hố']
+    ]
+  },
+  {
+    name: 'Đu dây qua vực', w: 3100, deathY: 1000, sky: 2,
+    spawn: [130, 600],
+    solids: [
+      [-200, 600, 900, 130, 'g', 180], [740, 130, 100, 60, 's', 60],
+      [930, 600, 780, 130, 'g', 190],
+      [2000, 600, 1100, 130, 'g', 200], [2500, 370, 600, 230, 'g', 0]
+    ],
+    boxes: [],
+    plates: [[1560, 600, 80, 0]],
+    doors: [],
+    movers: [{ x: 1712, y: 600, w: 120, h: 18, dx: 170, dy: 0, need: ['p0', 'l0'], c: 0 }],
+    bridges: [{ px: 2500, py: 362, len: 330, th: 16, a0: Math.PI / 2, a1: Math.PI - 0.8, need: ['l1'], c: 1 }],
+    seesaws: [],
+    ropes: [{ x: 790, y: 190, len: 300 }],
+    levers: [{ x: 2090, y: 600, c: 0 }, { x: 2860, y: 370, c: 1 }],
+    cps: [[130, 600], [1070, 600], [2100, 600], [2860, 370]],
+    exit: [3000, 370],
+    signs: [
+      [420, 470, 'Nhảy bám lấy dây, đung đưa rồi buông tay', 'Nhảy bám lấy dây, đung đưa rồi buông tay'],
+      [1540, 470, 'Một người giữ bàn nhấn,\nngười kia cưỡi bệ đá', 'Một người giữ bàn nhấn,\nngười kia cưỡi bệ đá'],
+      [2300, 470, 'Kiệu nhau lên vách rồi hạ cầu dốc', 'Kiệu nhau lên vách rồi hạ cầu dốc']
+    ]
+  }
+];
+
+/* Hai nhân vật đi xuyên qua nhau theo chiều ngang (để không chặn đường nhau),
+   nhưng vẫn va chạm theo chiều dọc (đứng lên đầu nhau để kiệu). */
+(() => {
+  const R = M.Resolver, orig = R.preSolvePosition;
+  R.preSolvePosition = function (pairs) {
+    for (let i = 0; i < pairs.length; i++) {
+      const p = pairs[i]; if (!p.isActive) continue;
+      const a = p.bodyA.parent.rd, b = p.bodyB.parent.rd;
+      if (a && b && a.kind === 'char' && b.kind === 'char' && a.ci !== b.ci) {
+        const ca = G.chars[a.ci], cb = G.chars[b.ci];
+        if (ca && cb && Math.abs(ca.trunk.position.y - cb.trunk.position.y) < 50) p.isActive = false;
+      }
+    }
+    return orig.apply(this, arguments);
+  };
+})();
+
+/* ---------- canvas ---------- */
+const cv = document.getElementById('cv'), cx = cv.getContext('2d'), wrap = document.getElementById('wrap');
+let dpr = 1, CW = 1, CH = 1, S = 1;
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  const r = wrap.getBoundingClientRect();
+  CW = Math.max(1, Math.round(r.width * dpr)); CH = Math.max(1, Math.round(r.height * dpr));
+  cv.width = CW; cv.height = CH;
+  S = Math.sqrt((r.width * r.height) / (isTouch && r.height > r.width ? 720 * 400 : 1000 * 560));      // tỉ lệ theo diện tích: luôn thấy ~1000×560 đơn vị (màn dọc: phóng to hơn)
+  S = Math.max(S, r.width / 1500, 0.05);
+}
+const isTouch = matchMedia('(hover:none) and (pointer:coarse)').matches;
+
+/* ---------- trạng thái ---------- */
+const G = {
+  phase: 'idle', lv: 0, world: null, engine: null, tick: 0, ltick: 0, solo: false,
+  chars: [], inputs: [blankInput(), blankInput()], cp: 0, falls: [0, 0], total: 0,
+  snaps: [], clockOff: null, lastSnapK: -1, parts: [], cam: { x: 500, y: 400, init: false },
+  timers: [], fade: 0, exitT: 0, t: 0, bannerShown: false
+};
+function blankInput() { return { mx: 0, jh: 0, jc: 0, l: 0, r: 0, a: -0.6, dn: 0 }; }
+const sim = () => Shell.isHost || G.solo;
+const myIdx = () => (G.solo ? 0 : Shell.isHost ? 0 : 1);
+function later(ms, fn) { const id = setTimeout(() => { G.timers = G.timers.filter(x => x !== id); fn(); }, ms); G.timers.push(id); }
+function clearTimers() { G.timers.forEach(clearTimeout); G.timers = []; }
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const wrapA = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+const rot = (p, a) => { const c = Math.cos(a), s = Math.sin(a); return { x: p.x * c - p.y * s, y: p.x * s + p.y * c }; };
+function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+const fmt = ms => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+/* ---------- dựng thế giới ---------- */
+function buildWorld(lv) {
+  const L = LEVELS[lv];
+  const engine = Engine.create({ positionIterations: 8, velocityIterations: 6, constraintIterations: 4, enableSleeping: false });
+  engine.gravity.y = 1;
+  const W = { L, lv, statics: [], dyn: [], boxes: [], plates: [], doors: [], movers: [], bridges: [], seesaws: [], ropes: [], levers: [], kin: [], deco: [] };
+  const add = b => Composite.add(engine.world, b);
+  const sopt = () => ({ isStatic: true, friction: 0.9, collisionFilter: { category: CAT_STATIC, mask: 0xffff } });
+  L.solids.forEach(([x, y, w, h, t, u]) => {
+    const b = Bodies.rectangle(x + w / 2, y + h / 2, w, h, sopt());
+    b.rd = { kind: 'solid', x, y, w, h, t, u: u || 0 };
+    W.statics.push(b); add(b);
+  });
+  L.boxes.forEach(([x, y, s, m, t], i) => {
+    const b = Bodies.rectangle(x, y - s / 2, s, s, { chamfer: { radius: t === 'h' ? 5 : 4 }, friction: t === 'h' ? 0.35 : 0.7, frictionStatic: 0.6, frictionAir: 0.01,
+      collisionFilter: { category: CAT_DYN, mask: CAT_STATIC | CAT_DYN | CAT_CHAR | CAT_ARM } });
+    Body.setMass(b, m);
+    b.rd = { kind: 'box', t, s, home: { x, y: y - s / 2 }, i };
+    W.boxes.push(b); W.dyn.push(b); add(b);
+  });
+  L.plates.forEach(([x, y, w, id]) => W.plates.push({ x, y, w, id, on: false, press: 0 }));
+  L.doors.forEach(d => {
+    const b = Bodies.rectangle(d.x + d.w / 2, d.y + d.h / 2, d.w, d.h, sopt());
+    b.rd = { kind: 'door', d };
+    const o = { type: 'door', d, b, s: 0, base: { x: d.x + d.w / 2, y: d.y + d.h / 2 } };
+    W.doors.push(o); W.kin.push(o); add(b);
+  });
+  L.movers.forEach(d => {
+    const b = Bodies.rectangle(d.x + d.w / 2, d.y + d.h / 2, d.w, d.h, sopt());
+    b.rd = { kind: 'mover', d };
+    const o = { type: 'mover', d, b, s: 0, dir: 1, wait: 0, base: { x: d.x + d.w / 2, y: d.y + d.h / 2 }, prev: { x: d.x + d.w / 2, y: d.y + d.h / 2 } };
+    W.movers.push(o); W.kin.push(o); add(b);
+  });
+  L.bridges.forEach(d => {
+    const b = Bodies.rectangle(d.px, d.py, d.len, d.th, sopt());
+    b.rd = { kind: 'bridge', d };
+    const o = { type: 'bridge', d, b, s: 0 };
+    W.bridges.push(o); W.kin.push(o); add(b); applyKin(o);
+  });
+  L.seesaws.forEach(d => {
+    const pl = Bodies.rectangle(d.x, d.y, d.len, 14, { chamfer: { radius: 5 } });
+    const lipL = Bodies.rectangle(d.x - d.len / 2 + 5, d.y - 10, 10, 8, { chamfer: { radius: 3 } });
+    const lipR = Bodies.rectangle(d.x + d.len / 2 - 5, d.y - 10, 10, 8, { chamfer: { radius: 3 } });
+    const b = Body.create({ parts: [pl, lipL, lipR], friction: 0.9, frictionAir: 0.02,
+      collisionFilter: { category: CAT_DYN, mask: CAT_STATIC | CAT_DYN | CAT_CHAR | CAT_ARM } });
+    Body.setMass(b, 2.2);
+    b.rd0 = { x: b.position.x - d.x, y: b.position.y - d.y };
+    Body.setAngle(b, d.a || 0);
+    b.rd = { kind: 'seesaw', d };
+    const c = Constraint.create({ pointA: { x: d.x, y: d.y }, bodyB: b, pointB: rot({ x: -b.rd0.x, y: -b.rd0.y }, d.a || 0), length: 0, stiffness: 1 });
+    W.seesaws.push(b); W.dyn.push(b); add(b); add(c);
+  });
+  L.ropes.forEach(d => {
+    const b = Bodies.rectangle(d.x, d.y + d.len / 2, 8, d.len, { frictionAir: 0.004, collisionFilter: { category: CAT_MISC, mask: 0 } });
+    Body.setMass(b, 1.6);
+    b.rd = { kind: 'rope', d };
+    const c = Constraint.create({ pointA: { x: d.x, y: d.y }, bodyB: b, pointB: { x: 0, y: -d.len / 2 }, length: 0, stiffness: 1 });
+    W.ropes.push(b); W.dyn.push(b); add(b); add(c);
+  });
+  L.levers.forEach((d, i) => {
+    const b = Bodies.rectangle(d.x, d.y - 24, 8, 48, { chamfer: { radius: 4 }, frictionAir: 0.08,
+      collisionFilter: { category: CAT_MISC, mask: d.spring ? 0 : CAT_CHAR } });
+    Body.setMass(b, 0.6);
+    const a0 = -0.6; Body.setAngle(b, 0); placeLever(b, d, a0);
+    b.rd = { kind: 'lever', d, i };
+    const c = Constraint.create({ pointA: { x: d.x, y: d.y - 2 }, bodyB: b, pointB: { x: 0, y: 22 }, length: 0, stiffness: 1 });
+    const o = { d, b, on: false, i };
+    W.levers.push(o); W.dyn.push(b); add(b); add(c);
+  });
+  W.sig = {};
+  // trang trí: búi cỏ, hoa, cây nhỏ
+  const R = rng(lv * 977 + 13);
+  W.statics.forEach(b => {
+    const r = b.rd; if (r.t !== 'g') return;
+    for (let x = r.x + 18; x < r.x + r.w - 14; x += 26 + R() * 46) {
+      const k = R();
+      W.deco.push({ x, y: r.y, k: k < .55 ? 'tuft' : k < .85 ? 'flower' : 'stone', c: R(), s: .7 + R() * .6 });
+    }
+  });
+  // đảo xa & mây (thị sai)
+  W.far = []; W.clouds = [];
+  for (let i = 0; i < 10; i++) W.far.push({ x: i * 420 + R() * 260 - 200, y: 120 + R() * 260, w: 90 + R() * 170, d: .12 + R() * .16, tree: R() < .6 });
+  for (let i = 0; i < 16; i++) W.clouds.push({ x: R() * (L.w + 800) - 400, y: R() * 520 - 120, s: .6 + R() * .9, d: .3 + R() * .35, v: 4 + R() * 8 });
+  W.engine = engine;
+  return W;
+}
+function placeLever(b, d, a) {
+  Body.setAngle(b, a);
+  const p = rot({ x: 0, y: -24 }, a);
+  Body.setPosition(b, { x: d.x + p.x, y: d.y - 2 + p.y });
+  Body.setVelocity(b, { x: 0, y: 0 }); Body.setAngularVelocity(b, 0);
+}
+function applyKin(o) {
+  const ease = t => t * t * (3 - 2 * t);
+  if (o.type === 'door') {
+    const e = ease(o.s);
+    Body.setPosition(o.b, { x: o.base.x + o.d.dx * e, y: o.base.y + o.d.dy * e });
+  } else if (o.type === 'mover') {
+    const e = ease(o.s);
+    Body.setPosition(o.b, { x: o.base.x + o.d.dx * e, y: o.base.y + o.d.dy * e });
+  } else if (o.type === 'bridge') {
+    const d = o.d, a = d.a0 + (d.a1 - d.a0) * ease(o.s);
+    Body.setAngle(o.b, a);
+    Body.setPosition(o.b, { x: d.px + Math.cos(a) * d.len / 2, y: d.py + Math.sin(a) * d.len / 2 });
+  }
+}
+
+/* ---------- nhân vật ---------- */
+const TORSO_H = 30, HEAD_DY = -27, LEG = 18, FOOT_R = 9;
+const BASE_TO_TORSO = TORSO_H / 2 + LEG + FOOT_R;          // từ đáy bàn chân tới tâm thân
+function makeChar(W, i, x, footY) {
+  const y = footY - BASE_TO_TORSO;
+  const group = Body.nextGroup(true);
+  const filt = { group, category: CAT_CHAR, mask: CAT_STATIC | CAT_DYN | CAT_CHAR | CAT_ARM | CAT_MISC };
+  const torso = Bodies.rectangle(x, y, 26, TORSO_H, { chamfer: { radius: 11 } });
+  const head = Bodies.rectangle(x, y + HEAD_DY, 28, 27, { chamfer: { radius: [9, 9, 12, 12] } });   // đỉnh đầu hơi phẳng để bạn đứng lên được
+  const trunk = Body.create({ parts: [torso, head], collisionFilter: filt, friction: 0.3, frictionAir: 0.006 });
+  Body.setMass(trunk, 3);
+  const tl = { x: torso.position.x - trunk.position.x, y: torso.position.y - trunk.position.y };
+  const hl = { x: head.position.x - trunk.position.x, y: head.position.y - trunk.position.y };
+  const foot = Bodies.circle(x, y + TORSO_H / 2 + LEG, FOOT_R, { collisionFilter: filt, friction: 1, frictionStatic: 2, frictionAir: 0.006 });
+  Body.setMass(foot, 1);
+  const legs = [-7, 7].map(dx => Constraint.create({ bodyA: trunk, pointA: { x: tl.x + dx, y: tl.y + 11 }, bodyB: foot, pointB: { x: 0, y: 0 }, stiffness: 0.3, damping: 0.12 }));
+  const sh = { x: tl.x, y: tl.y - 8 };
+  const arms = [0, 1].map(k => {
+    const a = Bodies.rectangle(x + sh.x + 17, y + sh.y, 36, 10, { chamfer: { radius: 5 }, friction: 0.8, frictionAir: 0.03,
+      collisionFilter: { group, category: CAT_ARM, mask: CAT_STATIC | CAT_DYN | CAT_CHAR } });
+    Body.setMass(a, 0.35);
+    const c = Constraint.create({ bodyA: trunk, pointA: { x: sh.x, y: sh.y }, bodyB: a, pointB: { x: -17, y: 0 }, length: 0, stiffness: 0.9, damping: 0.1 });
+    return { b: a, c, grab: null, cool: 0, k };
+  });
+  const bodies = [trunk, foot, arms[0].b, arms[1].b];
+  const rel = bodies.map(b => ({ x: b.position.x - x, y: b.position.y - y }));
+  const c = { i, trunk, foot, arms, legs, bodies, rel, tl, hl, sh, mass: 3 + 1 + .7, gTick: -99, jTick: -99, jbuf: 0, jcSeen: 0,
+    gBody: null, dead: 0, stuck: 0, face: 1, jcSeen0: 0, aim: -0.6, flags: 0,
+    vis: { sq: 0, ph: 0, vy: 0, py: null, px: null, g: true, blink: 2 + Math.random() * 3, land: 0 } };
+  [trunk, foot, ...arms.map(a => a.b)].forEach(b => { b.rd = { kind: 'char', ci: i }; Composite.add(W.engine.world, b); });
+  legs.forEach(l => Composite.add(W.engine.world, l));
+  arms.forEach(a => Composite.add(W.engine.world, a.c));
+  return c;
+}
+function placeChar(c, x, footY) {
+  const y = footY - BASE_TO_TORSO;
+  releaseAll(c);
+  G.chars.forEach(o => o !== c && o.arms.forEach(a => { if (a.grab && a.grab.body.rd && a.grab.body.rd.ci === c.i) release(a); }));
+  c.bodies.forEach((b, k) => {
+    Body.setAngle(b, 0);
+    Body.setPosition(b, { x: x + c.rel[k].x, y: y + c.rel[k].y });
+    Body.setVelocity(b, { x: 0, y: 0 }); Body.setAngularVelocity(b, 0);
+  });
+  c.vis.px = null;
+}
+const shoulderW = c => { const p = rot(c.sh, c.trunk.angle); return { x: c.trunk.position.x + p.x, y: c.trunk.position.y + p.y }; };
+const handW = a => { const p = rot({ x: 17, y: 0 }, a.b.angle); return { x: a.b.position.x + p.x, y: a.b.position.y + p.y }; };
+function release(a) {
+  if (!a.grab) return;
+  Composite.remove(G.world.engine.world, a.grab.con);
+  a.grab = null; a.cool = 8;
+}
+function releaseAll(c) { c.arms.forEach(release); }
+
+function grabCands(c) {
+  const W = G.world, list = [...W.statics, ...W.dyn, ...W.kin.map(o => o.b)];
+  G.chars.forEach(o => { if (o !== c && !o.dead) list.push(...o.bodies); });
+  return list;
+}
+function tryGrab(c, a) {
+  const hp = handW(a), ang = a.b.angle;
+  const cands = grabCands(c);
+  const pts = [hp, { x: hp.x + Math.cos(ang) * 6, y: hp.y + Math.sin(ang) * 6 }];
+  for (let k = 0; k < 8; k++) pts.push({ x: hp.x + Math.cos(k * Math.PI / 4) * 9, y: hp.y + Math.sin(k * Math.PI / 4) * 9 });
+  for (const p of pts) {
+    const hit = Query.point(cands, p);
+    if (!hit.length) continue;
+    const tb = hit[0];
+    const tgt = tb.parent || tb;
+    const con = Constraint.create({ bodyA: a.b, pointA: rot({ x: 17, y: 0 }, ang), bodyB: tgt,
+      pointB: { x: hp.x - tgt.position.x, y: hp.y - tgt.position.y }, length: 0, stiffness: 0.6, damping: 0.08 });
+    Composite.add(G.world.engine.world, con);
+    const kind = tgt.rd ? tgt.rd.kind : 'solid';
+    a.grab = { con, body: tgt, anchor: tgt.isStatic || kind === 'rope' || kind === 'seesaw' || kind === 'lever' || kind === 'char' || tgt.mass >= 6, kind };
+    return true;
+  }
+  return false;
+}
+function force(b, fx, fy) { b.force.x += fx; b.force.y += fy; }
+
+function ctrlChar(c, inp) {
+  const t = c.trunk, f = c.foot, tick = G.tick;
+  if (c.dead) return;
+  const grounded = tick - c.gTick < 5;
+  if (inp.jc !== c.jcSeen) { c.jcSeen = inp.jc; c.jbuf = 9; }
+  if (c.jbuf > 0) c.jbuf--;
+  const att = c.arms.filter(a => a.grab);
+  const anchored = att.some(a => a.grab.anchor);
+  if (inp.mx) c.face = inp.mx > 0 ? 1 : -1;
+  c.aim = inp.a;
+  // di chuyển
+  const target = inp.mx * RUN, vx = t.velocity.x;
+  const amax = grounded ? 0.32 : anchored ? 0.13 : 0.09;
+  let dv = clamp((target - vx) * 0.3, -amax, amax);
+  if (!inp.mx && !grounded) dv = 0;
+  force(t, t.mass * dv / DT2, 0); force(f, f.mass * dv / DT2, 0);
+  // vướng bậc thấp (mép ván, thùng nhỏ…): tự nhún nhẹ để bước qua
+  if (grounded && inp.mx && Math.abs(vx) < 0.5 && !anchored && tick - (c.boxT || -99) > 6) { if (++c.stuck > 9) { c.stuck = -12; [t, f].forEach(b => Body.setVelocity(b, { x: b.velocity.x + inp.mx * 1.2, y: -5.2 })); } }
+  else c.stuck = 0;
+  // nhảy
+  if (c.jbuf > 0 && grounded && tick - c.jTick > 14 && !anchored) {
+    c.jbuf = 0; c.jTick = tick; c.gTick = -99;
+    [t, f].forEach(b => Body.setVelocity(b, { x: b.velocity.x, y: Math.min(b.velocity.y, 0) - JUMP_V }));
+    c.arms.forEach(a => Body.setVelocity(a.b, { x: a.b.velocity.x, y: a.b.velocity.y - JUMP_V * .8 }));
+    c.ev = (c.ev || 0) | 1;
+  }
+  // giữ thẳng người (mềm, lắc lư)
+  const k = grounded ? 0.085 : att.length ? 0.03 : 0.05;
+  const lean = inp.mx * 0.12;
+  const a = wrapA(t.angle - lean);
+  Body.setAngularVelocity(t, t.angularVelocity * 0.9 - a * k);
+  // đu người lên khi đang bám và giữ nhảy
+  if (inp.jh && att.length) {
+    const sp = shoulderW(c);
+    let ax = 0, ay = 0;
+    att.forEach(q => {
+      const con = q.grab.con, bb = q.grab.body;
+      // bám sát mép: tay trượt dần lên mép trên của khối tĩnh (trong phạm vi 52 px)
+      if (bb.isStatic && bb.rd) {
+        const top = bb.bounds.min.y, aw = { x: bb.position.x + con.pointB.x, y: bb.position.y + con.pointB.y };
+        if (aw.y > top + 2 && aw.y < top + 52) { con.pointB.y -= Math.min(2.2, aw.y - top - 2); q.grab.top = 0; }
+        else if (aw.y <= top + 2) {
+          if (aw.x < bb.bounds.min.x + 3) con.pointB.x += 0.6; else if (aw.x > bb.bounds.max.x - 3) con.pointB.x -= 0.6;
+          q.grab.top = 1;
+        }
+      } else if (q.grab.kind === 'char' || q.grab.kind === 'box' || q.grab.kind === 'seesaw') q.grab.top = 1;
+      const aw = { x: bb.position.x + con.pointB.x, y: bb.position.y + con.pointB.y };
+      ax += aw.x; ay += aw.y;
+    });
+    ax /= att.length; ay /= att.length;
+    // tay bám thấp hơn hẳn tay kia trên mép thì tuột ra để người đu lên được
+    if (att.length === 2) {
+      const ys = att.map(q => q.grab.body.position.y + q.grab.con.pointB.y);
+      const lo = ys[0] > ys[1] ? 0 : 1;
+      if (att[1 - lo].grab.top && ys[lo] - ys[1 - lo] > 30) { release(att[lo]); att.splice(lo, 1); const q = att[0]; ax = q.grab.body.position.x + q.grab.con.pointB.x; ay = q.grab.body.position.y + q.grab.con.pointB.y; }
+    }
+    c.pullSide = 0;
+    if (c.foot.position.y + FOOT_R > ay - 3 && sp.y > ay - 70) {
+      c.pullSide = Math.sign(ax - sp.x) || c.face;
+      const fy = -c.mass * GF * 1.45, fx = sp.y < ay ? clamp((ax - sp.x) * 0.03, -0.6, 0.6) * c.mass * GF : 0;
+      force(t, fx, fy);
+      att.forEach(q => { const b = q.grab.body; if (!b.isStatic && q.grab.kind !== 'char') force(b, -fx / att.length * .6, -fy / att.length * .6); });
+      // đu qua mép: tay "dài ra" để chân vượt lên trên mép
+      if (sp.y < ay - 4) att.forEach(q => { if (q.grab.anchor && q.grab.top) q.grab.con.length = Math.min(44, q.grab.con.length + 1.4); });
+    }
+  } else { c.pullSide = 0; att.forEach(q => { if (q.grab.con.length > 0) q.grab.con.length = Math.max(0, q.grab.con.length - 1); }); }
+  // tay: giữ nút bám → vươn theo hướng ngắm và bám; thả → buông thõng
+  const walkSwing = Math.sin(c.vis.ph) * 0.5;
+  c.arms.forEach(arm => {
+    const held = arm.k === 0 ? inp.l : inp.r;
+    if (arm.cool > 0) arm.cool--;
+    let tgt, tmax;
+    if (held && arm.grab && c.pullSide && arm.grab.anchor) { tgt = Math.PI / 2 - c.pullSide * 0.45; tmax = 0.32; }
+    else if (held) { tgt = inp.a + (arm.k ? 0.12 : -0.12); tmax = 0.24; }
+    else { tgt = Math.PI / 2 - c.face * 0.35 + (arm.k ? walkSwing : -walkSwing) * (grounded && Math.abs(vx) > .5 ? 1 : 0); tmax = 0.025; }
+    const b = arm.b, err = wrapA(tgt - b.angle), w = b.angularVelocity;
+    const alpha = err * 0.32 - w * 0.55;
+    b.torque += clamp(alpha * b.inertia / DT2, -tmax, tmax);
+    if (held && !arm.grab && !arm.cool && Math.abs(err) < 0.75) { if (tryGrab(c, arm)) c.ev = (c.ev || 0) | 2; }
+    if (!held && arm.grab) release(arm);
+    if (arm.grab) {
+      const con = arm.grab.con;
+      const pa = { x: b.position.x + con.pointA.x, y: b.position.y + con.pointA.y };
+      const bb = con.bodyB, pb = { x: bb.position.x + con.pointB.x, y: bb.position.y + con.pointB.y };
+      if (Math.hypot(pa.x - pb.x, pa.y - pb.y) > 34 + con.length) release(arm);
+    }
+  });
+}
+
+/* ---------- bước mô phỏng (chủ phòng) ---------- */
+function signal(W) {
+  const s = {};
+  W.plates.forEach(p => { if (p.on) s['p' + p.id] = 1; });
+  W.levers.forEach(l => { if (l.on) s['l' + l.i] = 1; });
+  return s;
+}
+const active = (need, s) => need.some(n => s[n]);
+function step() {
+  const W = G.world, E = W.engine;
+  G.tick++;
+  const playing = G.phase === 'play';
+  if (playing) G.ltick++;
+  G.chars.forEach((c, i) => ctrlChar(c, playing ? G.inputs[i] : { ...blankInput(), jc: G.inputs[i].jc }));
+  // bàn nhấn
+  const pressers = [...W.boxes]; G.chars.forEach(c => { if (!c.dead) pressers.push(c.trunk, c.foot); });
+  W.plates.forEach(p => {
+    // "ổ cắm": thùng ở gần bàn nhấn được hút nhẹ vào giữa và xoay cho ngay ngắn
+    W.boxes.forEach(bx => {
+      const mxp = p.x + p.w / 2, dx = mxp - bx.position.x, dy = p.y - bx.position.y;
+      if (Math.abs(dx) < p.w / 2 + 6 && dy > 0 && dy < bx.rd.s * 1.4) {
+        force(bx, clamp(dx * 0.02, -0.4, 0.4) * bx.mass * GF, 0.3 * bx.mass * GF);
+        const q = Math.PI / 2, ra = bx.angle - Math.round(bx.angle / q) * q;
+        Body.setAngularVelocity(bx, bx.angularVelocity * 0.9 - ra * 0.04);
+      }
+    });
+    const hit = Query.region(pressers, { min: { x: p.x + 6, y: p.y - 14 }, max: { x: p.x + p.w - 6, y: p.y - 1 } });
+    p.on = hit.length > 0;
+  });
+  // cần gạt
+  W.levers.forEach(l => {
+    const b = l.b, lim = 0.62;
+    let a = wrapA(b.angle);
+    if (a > lim || a < -lim) { a = clamp(a, -lim, lim); Body.setAngle(b, a); Body.setAngularVelocity(b, 0); }
+    const grabbed = G.chars.some(c => c.arms.some(q => q.grab && q.grab.body === b));
+    let goal = l.d.spring ? (grabbed ? (a > 0.15 ? lim : null) : -lim) : (a > 0 ? lim : -lim);
+    if (goal != null) b.torque += clamp((goal - a) * 0.02 - b.angularVelocity * 0.3, -0.05, 0.05) * (l.d.spring ? 3 : 1);
+    l.on = a > 0.25;
+  });
+  const sig = W.sig = signal(W);
+  // vật động học
+  W.doors.forEach(o => { const on = active(o.d.need, sig); o.s = clamp(o.s + (on ? 0.03 : -0.03), 0, 1); applyKin(o); });
+  W.bridges.forEach(o => { const on = active(o.d.need, sig); o.s = clamp(o.s + (on ? 0.022 : -0.022), 0, 1); applyKin(o); });
+  W.movers.forEach(o => {
+    const on = active(o.d.need, sig), sp = 1 / 190;
+    if (on) {
+      if (o.wait > 0) o.wait--;
+      else { o.s += o.dir * sp; if (o.s >= 1) { o.s = 1; o.dir = -1; o.wait = 80; } else if (o.s <= 0) { o.s = 0; o.dir = 1; o.wait = 80; } }
+    } else { o.s = Math.max(0, o.s - sp * 1.5); o.dir = 1; o.wait = 0; }
+    const px = o.b.position.x, py = o.b.position.y;
+    applyKin(o);
+    const dx = o.b.position.x - px, dy = o.b.position.y - py;
+    if (dx || dy) G.chars.forEach(c => { if (c.gBody === o.b && G.tick - c.gTick < 3) c.bodies.forEach(b => Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })); });
+  });
+  // khối đá nặng chỉ trượt khi CẢ HAI người cùng đẩy
+  const heavy = W.boxes.filter(bx => bx.rd.t === 'h').map(bx => {
+    const t = bx.rd.touch || [], both = G.tick - (t[0] || -99) < 8 && G.tick - (t[1] || -99) < 8;
+    return { bx, both, x: bx.position.x, a: bx.angle };
+  });
+  Engine.update(E, DT);
+  heavy.forEach(h => {
+    const pitted = W.plates.some(p => Math.abs(p.x + p.w / 2 - h.bx.position.x) < p.w / 2 + 8);
+    if (!h.both && !pitted && h.bx.position.y < W.L.deathY) { Body.setPosition(h.bx, { x: h.x, y: h.bx.position.y }); Body.setVelocity(h.bx, { x: 0, y: h.bx.velocity.y }); Body.setAngle(h.bx, h.a); Body.setAngularVelocity(h.bx, 0); }
+  });
+  // chạm đất
+  G.chars.forEach(c => { c.wasG = G.tick - c.gTick < 5; });
+  for (const p of E.pairs.list) {
+    if (!p.isActive) continue;
+    for (const c of G.chars) {
+      const f = c.foot;
+      const pa = p.bodyA.parent, pb = p.bodyB.parent;
+      if (pa.rd && pa.rd.kind === 'box' && pb.rd && pb.rd.ci === c.i) { c.boxT = G.tick; (pa.rd.touch = pa.rd.touch || [])[c.i] = G.tick; }
+      else if (pb.rd && pb.rd.kind === 'box' && pa.rd && pa.rd.ci === c.i) { c.boxT = G.tick; (pb.rd.touch = pb.rd.touch || [])[c.i] = G.tick; }
+      if (p.bodyA !== f && p.bodyB !== f) continue;
+      const other = p.bodyA === f ? p.bodyB : p.bodyA;
+      const sup = p.collision.supports;
+      for (let k = 0; k < sup.length; k++) {
+        const s = sup[k]; if (!s) continue;
+        if (s.y > f.position.y + 4 && Math.abs(s.x - f.position.x) < 8) { c.gTick = G.tick; c.gBody = other.parent || other; break; }
+      }
+    }
+  }
+  // rơi khỏi đảo / thùng rơi
+  const L = W.L;
+  W.boxes.forEach(b => {
+    if (b.position.y > L.deathY + 100) {
+      G.chars.forEach(c => c.arms.forEach(a => { if (a.grab && a.grab.body === b) release(a); }));
+      Body.setPosition(b, b.rd.home); Body.setVelocity(b, { x: 0, y: 0 }); Body.setAngle(b, 0); Body.setAngularVelocity(b, 0);
+    }
+  });
+  G.chars.forEach(c => {
+    if (c.dead) {
+      c.dead--;
+      if (c.dead === 22) { const p = cpPos(c.i); placeChar(c, p.x, p.y); }
+      return;
+    }
+    if (c.trunk.position.y > L.deathY) killChar(c, true);
+  });
+  if (playing) {
+    // điểm hồi sinh
+    L.cps.forEach(([x, y], i) => {
+      if (i <= G.cp) return;
+      if (G.chars.some(c => !c.dead && c.trunk.position.x > x - 30 && Math.abs(c.trunk.position.y - (y - 45)) < 150)) {
+        G.cp = i; send({ t: 'cp', lv: G.lv, n: i }); onCp(i);
+      }
+    });
+    // đích
+    const [ex, ey] = L.exit;
+    const inExit = c => !c.dead && Math.hypot(c.trunk.position.x - ex, c.trunk.position.y - (ey - 50)) < 75;
+    G.inExit = G.chars.map(inExit);
+    if (G.inExit.every(Boolean)) { if (++G.exitT >= 24) levelDone(); } else G.exitT = 0;
+  }
+  if (!G.solo && Shell.isHost && G.tick % SNAP_EVERY === 0) sendSnap();
+}
+function cpPos(i) { const [x, y] = G.world.L.cps[G.cp]; return { x: x + (i ? 26 : -26), y }; }
+function killChar(c, fell) {
+  if (c.dead) return;
+  c.dead = 48; releaseAll(c);
+  G.chars.forEach(o => o !== c && o.arms.forEach(a => { if (a.grab && a.grab.body.rd && a.grab.body.rd.ci === c.i) release(a); }));
+  if (fell) G.falls[c.i]++;
+  send({ t: 'fall', lv: G.lv, i: c.i, f: G.falls });
+  onFall(c.i, G.falls);
+}
+
+/* ---------- mạng: ảnh chụp ---------- */
+function snapBodies() {
+  const out = [];
+  G.chars.forEach(c => out.push(...c.bodies));
+  out.push(...G.world.dyn);
+  return out;
+}
+function sendSnap() {
+  const p = [];
+  snapBodies().forEach(b => p.push(Math.round(b.position.x * 2), Math.round(b.position.y * 2), Math.round(wrapA(b.angle) * 300)));
+  const W = G.world;
+  const f = G.chars.map(c => (G.tick - c.gTick < 5 ? 1 : 0) | (c.arms[0].grab ? 2 : 0) | (c.arms[1].grab ? 4 : 0) | (c.dead ? 8 : 0)
+    | (G.inputs[c.i].l ? 16 : 0) | (G.inputs[c.i].r ? 32 : 0) | (c.ev || 0) << 6);
+  G.chars.forEach(c => { c.ev = 0; });
+  let pb = 0; W.plates.forEach((pl, i) => { if (pl.on) pb |= 1 << i; });
+  Shell.send({ t: 's', l: G.lv, k: G.tick, lt: G.ltick, p, f, a: G.chars.map(c => Math.round(c.aim * 20)), q: W.kin.map(o => Math.round(o.s * 1000)), b: pb, c: G.cp }, true);
+}
+function onSnap(m) {
+  if (!G.world || m.l !== G.lv) return;
+  const now = performance.now() / DT;
+  const off = m.k - now;
+  if (G.clockOff == null || off > G.clockOff + 30 || off < G.clockOff - 60) G.clockOff = off;
+  else if (off > G.clockOff) G.clockOff += (off - G.clockOff) * 0.3; else G.clockOff += (off - G.clockOff) * 0.02;
+  if (m.k <= G.lastSnapK) return;
+  G.lastSnapK = m.k;
+  G.snaps.push(m); if (G.snaps.length > 30) G.snaps.shift();
+  G.ltick = m.lt;
+  if (m.c > G.cp) { G.cp = m.c; onCp(m.c); }
+}
+function applySnaps() {
+  const sn = G.snaps; if (!sn.length) return;
+  const rk = performance.now() / DT + G.clockOff - INTERP_TICKS;
+  let a = sn[0], b = sn[0];
+  if (rk >= sn[sn.length - 1].k) a = b = sn[sn.length - 1];
+  else for (let i = 0; i < sn.length - 1; i++) if (sn[i].k <= rk && sn[i + 1].k > rk) { a = sn[i]; b = sn[i + 1]; break; }
+  const u = a === b ? 0 : clamp((rk - a.k) / (b.k - a.k), 0, 1);
+  const bodies = snapBodies();
+  bodies.forEach((bd, i) => {
+    const j = i * 3; if (a.p[j] == null || b.p[j] == null) return;
+    const x = (a.p[j] + (b.p[j] - a.p[j]) * u) / 2, y = (a.p[j + 1] + (b.p[j + 1] - a.p[j + 1]) * u) / 2;
+    const a0 = a.p[j + 2] / 300, a1 = b.p[j + 2] / 300;
+    Body.setPosition(bd, { x, y }); Body.setAngle(bd, a0 + wrapA(a1 - a0) * u);
+  });
+  const W = G.world;
+  W.kin.forEach((o, i) => { if (a.q[i] != null) { o.s = (a.q[i] + (b.q[i] - a.q[i]) * u) / 1000; applyKin(o); } });
+  W.plates.forEach((p, i) => { p.on = !!(b.b & (1 << i)); });
+  W.levers.forEach(l => { l.on = wrapA(l.b.angle) > 0.25; });
+  W.sig = signal(W);
+  G.chars.forEach((c, i) => {
+    const fl = b.f[i] || 0;
+    c.flags = fl; c.aim = (b.a[i] || 0) / 20;
+    c.netG = !!(fl & 1); c.netGrab = [!!(fl & 2), !!(fl & 4)]; c.netDead = !!(fl & 8); c.netHeld = [!!(fl & 16), !!(fl & 32)];
+  });
+}
+
+/* ---------- đầu vào cục bộ ---------- */
+const inp = blankInput();
+const keys = new Set();
+let mouse = { x: 0, y: 0, in: false, moved: 0 }, aimMode = isTouch ? 'stick' : 'key', stick = { x: 0, y: 0, on: false };
+const keyMap = { KeyA: 'L', ArrowLeft: 'L', KeyD: 'R', ArrowRight: 'R', KeyW: 'U', ArrowUp: 'U', Space: 'U', KeyS: 'D', ArrowDown: 'D', KeyJ: 'GL', KeyK: 'GR' };
+const held = { GL: new Set(), GR: new Set(), U: new Set() };
+function setHeld(k, id, down) {
+  const s = held[k]; const was = s.size > 0;
+  down ? s.add(id) : s.delete(id);
+  if (k === 'U' && down && !was) inp.jc = (inp.jc + 1) % 1000;
+}
+addEventListener('keydown', e => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  if (!Shell.playing || !Shell.playing()) return;
+  if (e.code === 'KeyR') { requestRespawn(); return; }
+  const k = keyMap[e.code]; if (!k) return;
+  e.preventDefault(); if (e.repeat) return;
+  keys.add(k);
+  if (k === 'GL' || k === 'GR') { setHeld(k, 'key', true); if (!mouse.in || performance.now() - mouse.moved > 1500) aimMode = 'key'; }
+  if (k === 'U') setHeld('U', 'key', true);
+});
+addEventListener('keyup', e => {
+  const k = keyMap[e.code]; if (!k) return;
+  keys.delete(k);
+  if (k === 'GL' || k === 'GR') setHeld(k, 'key', false);
+  if (k === 'U') setHeld('U', 'key', false);
+});
+addEventListener('blur', () => { keys.clear(); for (const k in held) held[k].clear(); stick.on = false; stick.x = stick.y = 0; });
+function mpos(e) { const r = wrap.getBoundingClientRect(); mouse.x = (e.clientX - r.left) * dpr; mouse.y = (e.clientY - r.top) * dpr; }
+wrap.addEventListener('pointermove', e => { if (e.pointerType !== 'mouse') return; mpos(e); mouse.in = true; mouse.moved = performance.now(); aimMode = 'mouse'; });
+wrap.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') mouse.in = false; });
+wrap.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse') return;
+  mpos(e); mouse.in = true; aimMode = 'mouse'; mouse.moved = performance.now();
+  if (e.button === 0) setHeld('GL', 'm', true); else if (e.button === 2) setHeld('GR', 'm', true);
+  try { wrap.setPointerCapture(e.pointerId); } catch (er) {}
+  e.preventDefault();
+});
+const mup = e => { if (e.pointerType !== 'mouse') return; if (e.button === 0) setHeld('GL', 'm', false); else if (e.button === 2) setHeld('GR', 'm', false); };
+wrap.addEventListener('pointerup', mup);
+addEventListener('pointerup', mup);
+wrap.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('contextmenu', e => e.preventDefault());
+document.getElementById('rgRs').addEventListener('click', e => { e.currentTarget.blur(); requestRespawn(); });
+document.getElementById('rgRs').addEventListener('pointerdown', e => e.stopPropagation());
+// cảm ứng
+const stickEl = document.getElementById('stick'), knob = document.getElementById('knob');
+let stickId = null;
+function stickMove(e) {
+  const r = stickEl.getBoundingClientRect(), R = r.width / 2;
+  let x = (e.clientX - r.left - R) / (R * .72), y = (e.clientY - r.top - R) / (R * .72);
+  const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; }
+  stick.x = x; stick.y = y;
+  knob.style.transform = `translate(${x * R * .62}px, ${y * R * .62}px)`;
+}
+stickEl.addEventListener('pointerdown', e => { e.preventDefault(); stickId = e.pointerId; stick.on = true; aimMode = 'stick'; try { stickEl.setPointerCapture(e.pointerId); } catch (er) {} stickMove(e); });
+stickEl.addEventListener('pointermove', e => { if (e.pointerId === stickId) stickMove(e); });
+const stickUp = e => { if (e.pointerId !== stickId) return; stickId = null; stick.on = false; stick.x = stick.y = 0; knob.style.transform = ''; };
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(ev => stickEl.addEventListener(ev, stickUp));
+stickEl.addEventListener('contextmenu', e => e.preventDefault());
+document.querySelectorAll('#tpad .tbtn').forEach(b => {
+  const k = b.dataset.k;
+  const map = { l: 'GL', r: 'GR', j: 'U' };
+  const dn = e => { e.preventDefault(); b.classList.add('on'); if (k === 'rs') requestRespawn(); else setHeld(map[k], 't' + e.pointerId, true); try { b.setPointerCapture(e.pointerId); } catch (er) {} };
+  const up = e => { b.classList.remove('on'); if (k !== 'rs') setHeld(map[k], 't' + e.pointerId, false); };
+  b.addEventListener('pointerdown', dn); b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up); b.addEventListener('lostpointercapture', up);
+  b.addEventListener('contextmenu', e => e.preventDefault());
+});
+
+let lastFace = 1;
+function readInput() {
+  let mx = (keys.has('R') ? 1 : 0) - (keys.has('L') ? 1 : 0);
+  if (!mx && stick.on && Math.abs(stick.x) > 0.3) mx = Math.sign(stick.x);
+  if (mx) lastFace = mx;
+  inp.mx = mx; inp.jh = held.U.size > 0 ? 1 : 0; inp.l = held.GL.size > 0 ? 1 : 0; inp.r = held.GR.size > 0 ? 1 : 0;
+  const me = G.chars[myIdx()];
+  let a;
+  if (aimMode === 'mouse' && me) {
+    const sp = shoulderW(me), w = screenToWorld(mouse.x, mouse.y);
+    a = Math.atan2(w.y - sp.y, w.x - sp.x);
+  } else if (aimMode === 'stick' && stick.on && Math.hypot(stick.x, stick.y) > 0.4) {
+    a = Math.atan2(stick.y, stick.x);
+  } else {
+    a = keys.has('D') ? (lastFace > 0 ? 0.6 : Math.PI - 0.6) : inp.jh ? (lastFace > 0 ? -1.25 : -Math.PI + 1.25) : (lastFace > 0 ? -0.55 : -Math.PI + 0.55);
+  }
+  inp.a = a;
+}
+let sentInp = null, lastInpSend = 0, pendingInp = false;
+function sendInput(now) {
+  const s = sentInp;
+  const btnChange = !s || s.mx !== inp.mx || s.jh !== inp.jh || s.jc !== inp.jc || s.l !== inp.l || s.r !== inp.r;
+  const aimChange = s && Math.abs(wrapA(s.a - inp.a)) > 0.05;
+  if (btnChange && now - lastInpSend > 35) {
+    Shell.send({ t: 'i', ...packInp() }); sentInp = { ...inp }; lastInpSend = now;
+  } else if (!btnChange && ((aimChange && now - lastInpSend > 80) || now - lastInpSend > 400)) {
+    Shell.send({ t: 'i', ...packInp() }, true); sentInp = { ...inp }; lastInpSend = now;
+  }
+}
+const packInp = () => ({ m: inp.mx, h: inp.jh, c: inp.jc, l: inp.l, r: inp.r, a: Math.round(inp.a * 100) });
+function requestRespawn() {
+  if (G.phase !== 'play') return;
+  if (sim()) killChar(G.chars[myIdx()], false);
+  else Shell.send({ t: 'rq', lv: G.lv });
+}
+
+/* ---------- vòng chính ---------- */
+let last = performance.now(), acc = 0, lastHud = 0;
+function frame(t) {
+  const dt = Math.min(0.1, (t - last) / 1000); last = t; G.t += dt;
+  if (G.world && G.phase !== 'idle') {
+    readInput();
+    if (sim() && !G.paused) {
+      if (!G.botCtl) Object.assign(G.inputs[myIdx()], inp);
+      acc += dt * 1000; let n = 0;
+      while (acc >= DT && n < 5) { step(); acc -= DT; n++; }
+      if (acc > DT) acc = 0;
+    } else {
+      sendInput(t);
+      applySnaps();
+    }
+    updateVis(dt);
+    if (t - lastHud > 250) { lastHud = t; hud(); }
+  }
+  draw(dt);
+  requestAnimationFrame(frame);
+}
+
+/* ---------- vòng đời màn ---------- */
+function loadLevel(lv, first) {
+  clearTimers();
+  G.lv = lv; G.world = buildWorld(lv); G.cp = 0; G.exitT = 0; G.ltick = 0; G.snaps = []; G.lastSnapK = -1; G.clockOff = null;
+  const [sx, sy] = G.world.L.spawn;
+  G.chars = [makeChar(G.world, 0, sx - 26, sy), makeChar(G.world, 1, sx + 26, sy)];
+  G.chars.forEach((c, i) => { c.jcSeen = G.inputs[i].jc; });
+  G.parts = []; G.fade = 0; G.cam.init = false; G.inExit = [false, false];
+  G.phase = 'ready';
+  const name = G.world.L.name;
+  if (first) Shell.countdown(() => { if (G.phase === 'ready') G.phase = 'play'; }, `Màn ${lv + 1}: ${name}`);
+  else { Shell.banner(`Màn ${lv + 1}`, name, 1600); later(1500, () => { if (G.phase === 'ready') G.phase = 'play'; }); }
+  hud();
+}
+function levelDone() {
+  if (G.phase !== 'play') return;
+  const m = { t: 'done', lv: G.lv, time: Math.round(G.ltick * DT), f: G.falls };
+  send(m); onDone(m);
+}
+function onDone(m) {
+  if (G.phase === 'clear' || G.phase === 'over') return;
+  G.phase = 'clear';
+  G.total += m.time; G.falls = m.f.slice();
+  Shell.sfx.score();
+  burstAt(G.world.L.exit[0], G.world.L.exit[1] - 50, ['#fff', '#ffd6f0', '#bfe7ff', '#fff4b0'], 40, 260);
+  Shell.banner(`Qua màn ${m.lv + 1}!`, `Thời gian ${fmt(m.time)}`, 2600);
+  hud();
+  if (sim()) later(2800, () => {
+    if (G.phase !== 'clear') return;
+    if (m.lv + 1 >= LEVELS.length) { const e = { t: 'end', total: G.total, f: G.falls }; send(e); onEnd(e); }
+    else { const n = m.lv + 1; send({ t: 'lvl', lv: n }); later(G.solo ? 0 : Shell.lat(), () => loadLevel(n, false)); }
+  });
+}
+function onEnd(m) {
+  G.phase = 'over'; G.total = m.total; G.falls = m.f.slice();
+  const me = myIdx();
+  Shell.setScore(G.falls[me], G.falls[1 - me]);
+  Shell.hud({ center: 'Hoàn thành', centerSub: '⏱ ' + fmt(G.total) });
+  Shell.result({ kind: 'win', title: 'Hoàn thành!', reason: `Cùng nhau vượt ${LEVELS.length} ải trong ${fmt(G.total)} · Số lần rơi: ${G.falls[me]} (bạn) và ${G.falls[1 - me]} (${Shell.oppName})` });
+}
+function onCp(n) {
+  const [x, y] = G.world.L.cps[n];
+  Shell.sfx.pick(); burstAt(x, y - 60, ['#fff2b0', '#ffd36b', '#fff'], 18, 140);
+  Shell.toast('Đã lưu điểm hồi sinh');
+}
+function onFall(i, f) {
+  G.falls = f.slice();
+  if (i === myIdx()) { G.fade = 1; Shell.sfx.miss(); }
+  hud();
+}
+function hud() {
+  const me = myIdx();
+  Shell.setScore(G.falls[me] || 0, G.falls[1 - me] || 0);
+  if (G.phase === 'over') return;
+  Shell.hud({ center: `Màn ${G.lv + 1}/${LEVELS.length}`, centerSub: G.phase === 'play' ? '⏱ ' + fmt(G.ltick * DT) : G.phase === 'clear' ? 'Qua màn!' : 'Sẵn sàng', meSub: 'Số lần rơi', oppSub: 'Đồng đội' });
+}
+function send(m) { if (!G.solo) Shell.send(m); }
+function resetMatch() {
+  clearTimers();
+  G.phase = 'idle'; G.falls = [0, 0]; G.total = 0; G.inputs = [blankInput(), blankInput()];
+  Shell.setScore(0, 0);
+}
+function hostStart() {
+  resetMatch();
+  Shell.send({ t: 'start' });
+  Shell.send({ t: 'lvl', lv: 0 });
+  later(Shell.lat(), () => loadLevel(0, true));
+}
+
+/* ---------- hiệu ứng ---------- */
+function burstAt(x, y, cols, n, sp) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = (0.3 + Math.random()) * sp;
+    G.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: .7 + Math.random() * .6, t: 0, c: cols[i % cols.length], r: 2 + Math.random() * 3, k: 'spark' });
+  }
+}
+function dust(x, y, n, side) {
+  for (let i = 0; i < n; i++) G.parts.push({ x: x + (Math.random() - .5) * 16, y: y - 3, vx: (side || (Math.random() - .5) * 2) * (30 + Math.random() * 60), vy: -10 - Math.random() * 30, life: .45 + Math.random() * .35, t: 0, r: 4 + Math.random() * 5, k: 'dust' });
+}
+function updateVis(dt) {
+  G.chars.forEach(c => {
+    const v = c.vis, p = c.trunk.position;
+    const g = sim() ? G.tick - c.gTick < 5 : c.netG;
+    if (v.px != null && dt > 0) {
+      const vx = (p.x - v.px) / dt, vy = (p.y - v.py) / dt;
+      v.vx = v.vx == null ? vx : v.vx + (vx - v.vx) * Math.min(1, dt * 12);
+      if (!g) v.vy = vy;
+      if (g && !v.g && v.vy > 250) { v.sq = Math.min(1, v.vy / 650); dust(c.foot.position.x, c.foot.position.y + FOOT_R, 7); if (c.i === myIdx()) Shell.sfx.drop(); }
+      if (g) { v.ph += Math.abs(v.vx) * dt * 0.075; if (Math.abs(v.vx) > 120 && Math.random() < dt * 6) dust(c.foot.position.x, c.foot.position.y + FOOT_R, 1, -Math.sign(v.vx)); }
+      if (Math.abs(v.vx) > 20) c.face = v.vx > 0 ? 1 : -1;
+    }
+    if (!g && v.g && v.vy < -200 && c.i === myIdx()) Shell.sfx.jump();
+    v.g = g; v.px = p.x; v.py = p.y;
+    v.sq = Math.max(0, v.sq - dt * 4);
+    v.blink -= dt; if (v.blink < -0.12) v.blink = 2 + Math.random() * 3.5;
+    const grabs = sim() ? c.arms.map(a => !!a.grab) : (c.netGrab || [false, false]);
+    if (c.prevGrabs && grabs.some((x, i) => x && !c.prevGrabs[i]) && c.i === myIdx()) Shell.sfx.click();
+    c.prevGrabs = grabs;
+  });
+  G.parts = G.parts.filter(q => (q.t += dt) < q.life);
+  G.parts.forEach(q => { q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= 0.95; q.vy = q.k === 'spark' ? q.vy + 260 * dt : q.vy * 0.95; });
+  if (G.fade > 0) G.fade = Math.max(0, G.fade - dt * 0.9);
+  // camera
+  const me = G.chars[myIdx()], op = G.chars[1 - myIdx()];
+  if (me) {
+    const VW = CW / (S * dpr), VH = CH / (S * dpr), L = G.world.L;
+    let tx = me.trunk.position.x, ty = me.trunk.position.y - 40;
+    if (op && Math.abs(op.trunk.position.x - tx) < VW * 0.7 && Math.abs(op.trunk.position.y - ty) < VH * 0.7) { tx = tx * .72 + op.trunk.position.x * .28; ty = ty * .72 + (op.trunk.position.y - 40) * .28; }
+    const dead = sim() ? me.dead : me.netDead;
+    if (dead) { tx = G.cam.x; ty = Math.min(ty, G.cam.y); }
+    tx = VW >= L.w ? L.w / 2 : clamp(tx, VW / 2 - 60, L.w - VW / 2 + 60);
+    ty = clamp(ty, -300 + VH / 2, L.deathY + 40 - VH / 2);
+    if (!isFinite(G.cam.x) || !isFinite(G.cam.y)) G.cam.init = false;
+    if (!isFinite(tx) || !isFinite(ty)) return;
+    if (!G.cam.init) { G.cam.x = tx; G.cam.y = ty; G.cam.init = true; }
+    const k = 1 - Math.exp(-dt * 4.5);
+    G.cam.x += (tx - G.cam.x) * k; G.cam.y += (ty - G.cam.y) * k;
+  }
+}
+function screenToWorld(sx, sy) { const k = S * dpr; return { x: (sx - CW / 2) / k + G.cam.x, y: (sy - CH / 2) / k + G.cam.y }; }
+
+/* ---------- vẽ ---------- */
+const dark = () => { const th = document.documentElement.dataset.theme; return th ? th === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
+const SKIES = [
+  { l: ['#9cc8f6', '#f7cfe0', '#ffe6c4'], d: ['#141a3c', '#33306a', '#6a4c7e'], sun: '#fff1c9' },
+  { l: ['#86cbff', '#cfeaff', '#fff2d8'], d: ['#0f1d3d', '#23406e', '#47678f'], sun: '#ffffff' },
+  { l: ['#7f8be0', '#f0a8c3', '#ffd59e'], d: ['#160f30', '#462a63', '#8a4b6e'], sun: '#ffe0a6' }
+];
+function rr(x, y, w, h, r) { cx.beginPath(); cx.roundRect ? cx.roundRect(x, y, w, h, r) : cx.rect(x, y, w, h); }
+function draw() {
+  const dk = dark();
+  cx.setTransform(1, 0, 0, 1, 0, 0);
+  const W = G.world;
+  const sky = SKIES[W ? W.L.sky : 0], cols = dk ? sky.d : sky.l;
+  const g = cx.createLinearGradient(0, 0, 0, CH);
+  g.addColorStop(0, cols[0]); g.addColorStop(.55, cols[1]); g.addColorStop(1, cols[2]);
+  cx.fillStyle = g; cx.fillRect(0, 0, CW, CH);
+  const k = S * dpr;
+  const camx = G.cam.x, camy = G.cam.y;
+  // mặt trời / trăng
+  const sunX = CW * .78 - camx * k * 0.02, sunY = CH * .22;
+  const sg = cx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 160 * k);
+  sg.addColorStop(0, dk ? 'rgba(255,246,220,.9)' : 'rgba(255,255,240,.95)'); sg.addColorStop(.18, dk ? 'rgba(255,240,210,.35)' : 'rgba(255,250,225,.55)'); sg.addColorStop(1, 'rgba(255,255,255,0)');
+  cx.fillStyle = sg; cx.fillRect(0, 0, CW, CH);
+  cx.fillStyle = dk ? '#fff4dc' : sky.sun; cx.beginPath(); cx.arc(sunX, sunY, 26 * k, 0, 7); cx.fill();
+  if (dk) { // sao
+    const R = rng(7);
+    cx.fillStyle = '#fff';
+    for (let i = 0; i < 70; i++) { const x = (R() * CW * 1.4 - camx * k * .03) % CW, y = R() * CH * .6; cx.globalAlpha = .3 + .5 * Math.abs(Math.sin(G.t * (.5 + R()) + i)); cx.fillRect((x + CW) % CW, y, 1.6 * dpr, 1.6 * dpr); }
+    cx.globalAlpha = 1;
+  }
+  if (!W) return;
+  // đảo xa
+  W.far.forEach(f => {
+    const x = (f.x - camx * f.d) * k + CW * .5 * (1 - f.d), y = (f.y - camy * f.d * .5) * k + CH * .2;
+    farIsland(x, y, f.w * k * (0.6 + f.d), dk, f.tree, f.d);
+  });
+  // mây xa
+  W.clouds.forEach(c => {
+    const x = (((c.x + G.t * c.v - camx * c.d) % (W.L.w + 800)) + W.L.w + 800) % (W.L.w + 800) - 400;
+    cloud(x * k + CW * .5 * (1 - c.d) - 200 * k, (c.y - camy * c.d * .6) * k + CH * .35, c.s * k, dk ? 'rgba(200,190,240,.18)' : 'rgba(255,255,255,.7)');
+  });
+  cx.setTransform(k, 0, 0, k, CW / 2 - camx * k, CH / 2 - camy * k);
+  drawWorld(W, dk);
+  cx.setTransform(1, 0, 0, 1, 0, 0);
+  if (G.fade > 0) {
+    const a = G.fade > .6 ? (1 - G.fade) / .4 : G.fade / .6;
+    cx.fillStyle = dk ? `rgba(14,12,34,${a * .92})` : `rgba(255,250,246,${a * .92})`; cx.fillRect(0, 0, CW, CH);
+  }
+}
+function farIsland(x, y, w, dk, tree, d) {
+  const al = .25 + d * 1.4;
+  cx.globalAlpha = Math.min(.75, al);
+  cx.fillStyle = dk ? '#4d4578' : '#b6a8dc';
+  cx.beginPath();
+  cx.moveTo(x - w / 2, y);
+  cx.bezierCurveTo(x - w * .42, y + w * .28, x - w * .12, y + w * .3, x - w * .02, y + w * .5);
+  cx.bezierCurveTo(x + w * .1, y + w * .32, x + w * .4, y + w * .22, x + w / 2, y);
+  cx.closePath(); cx.fill();
+  cx.fillStyle = dk ? '#5f8f86' : '#b9dcae';
+  cx.beginPath(); cx.ellipse(x, y, w / 2, w * .06, 0, 0, 7); cx.fill();
+  if (tree) {
+    cx.fillStyle = dk ? '#557f78' : '#a3cf97';
+    cx.beginPath(); cx.arc(x + w * .16, y - w * .1, w * .08, 0, 7); cx.arc(x + w * .25, y - w * .07, w * .06, 0, 7); cx.fill();
+    cx.fillStyle = dk ? '#4d4578' : '#a796c9'; cx.fillRect(x + w * .185, y - w * .06, w * .018, w * .06);
+  }
+  cx.globalAlpha = 1;
+}
+function cloud(x, y, s, col) {
+  cx.fillStyle = col; cx.beginPath();
+  cx.ellipse(x, y, 70 * s, 24 * s, 0, 0, 7); cx.ellipse(x - 38 * s, y + 4 * s, 40 * s, 18 * s, 0, 0, 7);
+  cx.ellipse(x + 30 * s, y - 10 * s, 42 * s, 26 * s, 0, 0, 7); cx.ellipse(x - 8 * s, y - 16 * s, 34 * s, 24 * s, 0, 0, 7);
+  cx.fill();
+}
+function groundBelow(x, y) {
+  let best = Infinity;
+  const W = G.world;
+  for (const b of [...W.statics, ...W.kin.map(o => o.b)]) {
+    const bb = b.bounds;
+    if (x < bb.min.x || x > bb.max.x || bb.min.y < y - 4) continue;
+    if (bb.min.y < best) best = bb.min.y;
+  }
+  return best;
+}
+function shadow(x, y, w) {
+  const gy = groundBelow(x, y);
+  if (!isFinite(gy) || gy - y > 260) return;
+  const a = .22 * (1 - (gy - y) / 260);
+  cx.fillStyle = `rgba(40,30,70,${a})`;
+  cx.beginPath(); cx.ellipse(x, gy + 1, w * (1 - (gy - y) / 520), 5, 0, 0, 7); cx.fill();
+}
+function drawWorld(W, dk) {
+  const L = W.L;
+  // biển mây phía dưới (lớp sau)
+  cloudSea(L, dk, 0);
+  // biển chỉ dẫn
+  ctxFont(15);
+  L.signs.forEach(s => sign(s[0], s[1], isTouch ? s[3] : s[2], dk));
+  // cửa (sau khối đá)
+  W.doors.forEach(o => drawDoor(o, dk));
+  W.bridges.forEach(o => drawBridge(o, dk));
+  W.statics.forEach(b => drawSolid(b.rd, dk));
+  W.deco.forEach(d => drawDeco(d, dk));
+  // điểm hồi sinh
+  L.cps.forEach(([x, y], i) => { if (i > 0) lantern(x, y, i <= G.cp, dk); });
+  W.plates.forEach(p => drawPlate(p, W, dk));
+  W.movers.forEach(o => drawMover(o, dk));
+  portal(L.exit[0], L.exit[1], dk);
+  W.ropes.forEach(b => drawRope(b, dk));
+  W.levers.forEach(l => drawLever(l, dk));
+  W.seesaws.forEach(b => drawSeesaw(b, dk));
+  W.boxes.forEach(b => shadow(b.position.x, b.bounds.max.y, b.rd.s * .55));
+  W.boxes.forEach(b => drawBox(b, dk));
+  G.chars.forEach(c => { if (!c.dead || c.trunk.position.y < L.deathY) shadow(c.foot.position.x, c.foot.position.y + FOOT_R, 20); });
+  const me = myIdx();
+  [1 - me, me].forEach(i => G.chars[i] && drawChar(G.chars[i], dk));
+  // hạt
+  G.parts.forEach(q => {
+    const a = 1 - q.t / q.life;
+    if (q.k === 'dust') { cx.fillStyle = dk ? `rgba(210,200,240,${a * .5})` : `rgba(255,255,255,${a * .8})`; cx.beginPath(); cx.arc(q.x, q.y, q.r * (1 + q.t * 2), 0, 7); cx.fill(); }
+    else { cx.globalAlpha = a; cx.fillStyle = q.c; cx.beginPath(); cx.arc(q.x, q.y, q.r, 0, 7); cx.fill(); cx.globalAlpha = 1; }
+  });
+  cloudSea(L, dk, 1);
+}
+function ctxFont(px, w = 600) { cx.font = `${w} ${px}px "Be Vietnam Pro", system-ui, sans-serif`; }
+function sign(x, y, text, dk) {
+  const lines = text.split('\n');
+  ctxFont(14);
+  const w = Math.max(...lines.map(l => cx.measureText(l).width)) + 24, h = lines.length * 19 + 14;
+  cx.fillStyle = dk ? 'rgba(30,26,60,.55)' : 'rgba(255,255,255,.62)';
+  rr(x - w / 2, y - h / 2, w, h, 12); cx.fill();
+  cx.fillStyle = dk ? '#e9e4ff' : '#4a4266'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  lines.forEach((l, i) => cx.fillText(l, x, y - h / 2 + 16 + i * 19));
+}
+function cloudSea(L, dk, front) {
+  const y0 = L.deathY - (front ? 40 : 110);
+  const x0 = Math.floor((G.cam.x - 900) / 110) * 110;
+  cx.fillStyle = front ? (dk ? 'rgba(120,105,170,.55)' : 'rgba(255,255,255,.82)') : (dk ? 'rgba(90,80,140,.5)' : 'rgba(255,245,250,.7)');
+  cx.beginPath();
+  for (let x = x0; x < G.cam.x + 900; x += 110) {
+    const ph = x * 0.013 + (front ? 2 : 0) + G.t * (front ? .5 : .3);
+    cx.moveTo(x + 80, y0 + Math.sin(ph) * 14);
+    cx.arc(x, y0 + Math.sin(ph) * 14, 70 + Math.sin(ph * 1.7) * 14, 0, 7);
+  }
+  cx.rect(x0 - 100, y0 + 20, 2000, 900);
+  cx.fill();
+}
+function drawSolid(r, dk) {
+  const { x, y, w, h, t, u } = r;
+  if (t === 'g') {
+    // chóp đá treo phía dưới (các khối tròn mềm)
+    if (u) {
+      const R = rng(Math.round(x * 7 + y));
+      const gr = cx.createLinearGradient(0, y + h, 0, y + h + u);
+      gr.addColorStop(0, dk ? '#5a4f73' : '#b49d86'); gr.addColorStop(1, dk ? '#2e2843' : '#9a87a6');
+      cx.fillStyle = gr; cx.beginPath(); cx.moveTo(x + 4, y + h - 6);
+      const n = Math.max(2, Math.round(w / 230));
+      for (let i = 0; i < n; i++) {
+        const xa = x + 4 + (w - 8) * i / n, xb = x + 4 + (w - 8) * (i + 1) / n, lw = xb - xa;
+        const depth = u * (0.45 + 0.55 * Math.sin(Math.PI * (i + .5) / n)) * (.8 + R() * .3);
+        cx.bezierCurveTo(xa + lw * .05, y + h + depth * .9, xa + lw * .35, y + h + depth * 1.25, xa + lw * .5, y + h + depth);
+        cx.bezierCurveTo(xa + lw * .65, y + h + depth * .75, xb - lw * .05, y + h + depth * .5, xb, y + h - 6);
+      }
+      cx.closePath(); cx.fill();
+      cx.strokeStyle = dk ? 'rgba(255,255,255,.05)' : 'rgba(90,60,80,.1)'; cx.lineWidth = 4;
+      for (let i = 1; i < 3; i++) { cx.beginPath(); cx.moveTo(x + 20, y + h + u * .18 * i); cx.quadraticCurveTo(x + w / 2, y + h + u * .26 * i, x + w - 20, y + h + u * .18 * i); cx.stroke(); }
+    }
+    const gr = cx.createLinearGradient(0, y, 0, y + h);
+    gr.addColorStop(0, dk ? '#7c6f95' : '#d9c3a4'); gr.addColorStop(1, dk ? '#5a4f73' : '#b49d86');
+    cx.fillStyle = gr; rr(x, y, w, h, 14); cx.fill();
+    // vân đá
+    cx.strokeStyle = dk ? 'rgba(255,255,255,.06)' : 'rgba(120,90,60,.12)'; cx.lineWidth = 3;
+    const R = rng(Math.round(x + y * 3));
+    for (let i = 0; i < w / 60; i++) { const sx = x + 20 + R() * (w - 40), sy = y + 26 + R() * Math.max(10, h - 40); cx.beginPath(); cx.moveTo(sx, sy); cx.lineTo(sx + 16 + R() * 20, sy + 2); cx.stroke(); }
+    // cỏ
+    const gg = cx.createLinearGradient(0, y - 4, 0, y + 16);
+    gg.addColorStop(0, dk ? '#8fd0a0' : '#b8e986'); gg.addColorStop(1, dk ? '#4f9a78' : '#7cc35a');
+    cx.fillStyle = gg; cx.beginPath(); cx.moveTo(x, y + 6);
+    cx.quadraticCurveTo(x, y - 3, x + 10, y - 3);
+    cx.lineTo(x + w - 10, y - 3); cx.quadraticCurveTo(x + w, y - 3, x + w, y + 6);
+    for (let xx = x + w; xx > x; xx -= 18) cx.quadraticCurveTo(xx - 9, y + 20 + ((xx * 7) % 5), Math.max(x, xx - 18), y + 10);
+    cx.closePath(); cx.fill();
+    cx.strokeStyle = dk ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.55)'; cx.lineWidth = 2;
+    cx.beginPath(); cx.moveTo(x + 10, y - 1.5); cx.lineTo(x + w - 10, y - 1.5); cx.stroke();
+  } else if (t === 's') {
+    const gr = cx.createLinearGradient(x, 0, x + w, 0);
+    gr.addColorStop(0, dk ? '#6d6890' : '#b9b3cf'); gr.addColorStop(1, dk ? '#4e4a6e' : '#958fb0');
+    cx.fillStyle = gr; rr(x, y, w, h, 12); cx.fill();
+    cx.strokeStyle = dk ? 'rgba(0,0,0,.2)' : 'rgba(70,60,110,.16)'; cx.lineWidth = 2;
+    for (let yy = y + 34, row = 0; yy < y + h - 6; yy += 34, row++) {
+      cx.beginPath(); cx.moveTo(x + 6, yy); cx.lineTo(x + w - 6, yy); cx.stroke();
+      for (let xx = x + (row % 2 ? 30 : 55); xx < x + w - 10; xx += 50) { cx.beginPath(); cx.moveTo(xx, yy); cx.lineTo(xx, yy + 34); cx.stroke(); }
+    }
+    if (u) { cx.fillStyle = dk ? '#3d3858' : '#8f88ad'; cx.beginPath(); cx.moveTo(x + 6, y + h - 2); cx.quadraticCurveTo(x + w / 2, y + h + u * 1.4, x + w - 6, y + h - 2); cx.fill(); }
+  } else {
+    woodPlank(x, y, w, h, dk);
+    if (u) { cx.fillStyle = dk ? '#4a3a40' : '#9a6c48'; for (const px of [x + 14, x + w - 22]) { cx.fillRect(px, y + h, 8, u); } }
+  }
+}
+function woodPlank(x, y, w, h, dk) {
+  const gr = cx.createLinearGradient(0, y, 0, y + h);
+  gr.addColorStop(0, dk ? '#a07a62' : '#e3b27a'); gr.addColorStop(1, dk ? '#6e5048' : '#b87d4b');
+  cx.fillStyle = gr; rr(x, y, w, h, 6); cx.fill();
+  cx.strokeStyle = dk ? 'rgba(0,0,0,.25)' : 'rgba(110,60,25,.28)'; cx.lineWidth = 2;
+  cx.beginPath(); cx.moveTo(x + 4, y + h / 2); cx.lineTo(x + w - 4, y + h / 2); cx.stroke();
+  for (let xx = x + 40; xx < x + w - 10; xx += 70) { cx.beginPath(); cx.arc(xx, y + h * .3, 1.6, 0, 7); cx.stroke(); }
+}
+function drawDeco(d, dk) {
+  const { x, y, s } = d;
+  if (d.k === 'tuft') {
+    cx.strokeStyle = dk ? '#7fc59a' : '#86c95b'; cx.lineWidth = 2.4; cx.lineCap = 'round';
+    cx.beginPath(); for (const a of [-.5, -.15, .2, .55]) { cx.moveTo(x, y); cx.quadraticCurveTo(x + a * 10 * s, y - 8 * s, x + a * 16 * s, y - 13 * s); } cx.stroke();
+  } else if (d.k === 'flower') {
+    cx.strokeStyle = dk ? '#7fc59a' : '#7bbf55'; cx.lineWidth = 2; cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x, y - 14 * s); cx.stroke();
+    cx.fillStyle = ['#ff9ec4', '#fff3a6', '#b9a6ff', '#ffffff'][Math.floor(d.c * 4)];
+    for (let i = 0; i < 5; i++) { cx.beginPath(); cx.arc(x + Math.cos(i * 1.256) * 3.6 * s, y - 14 * s + Math.sin(i * 1.256) * 3.6 * s, 2.8 * s, 0, 7); cx.fill(); }
+    cx.fillStyle = '#ffcf5a'; cx.beginPath(); cx.arc(x, y - 14 * s, 2 * s, 0, 7); cx.fill();
+  } else {
+    cx.fillStyle = dk ? '#8a80a8' : '#c8bfd8'; cx.beginPath(); cx.ellipse(x, y - 3 * s, 8 * s, 5 * s, 0, Math.PI, 0); cx.fill();
+  }
+}
+function lantern(x, y, lit, dk) {
+  cx.strokeStyle = dk ? '#8a7aa6' : '#8b6a4f'; cx.lineWidth = 4; cx.lineCap = 'round';
+  cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x, y - 70); cx.quadraticCurveTo(x, y - 80, x + 12, y - 80); cx.stroke();
+  if (lit) {
+    const gl = cx.createRadialGradient(x + 14, y - 66, 0, x + 14, y - 66, 46);
+    gl.addColorStop(0, 'rgba(255,220,120,.8)'); gl.addColorStop(1, 'rgba(255,220,120,0)');
+    cx.fillStyle = gl; cx.beginPath(); cx.arc(x + 14, y - 66, 46, 0, 7); cx.fill();
+  }
+  cx.fillStyle = lit ? '#ffd56b' : (dk ? '#5c5478' : '#d8d1c6');
+  rr(x + 7, y - 76, 14, 18, 5); cx.fill();
+  cx.strokeStyle = dk ? '#2c2640' : '#6e5a48'; cx.lineWidth = 1.5; cx.stroke();
+}
+function drawDoor(o, dk) {
+  const b = o.b, d = o.d, x = b.position.x - d.w / 2, y = b.position.y - d.h / 2, col = SIGC[d.c];
+  const gr = cx.createLinearGradient(x, 0, x + d.w, 0);
+  gr.addColorStop(0, dk ? '#5f5a80' : '#a9a3c4'); gr.addColorStop(1, dk ? '#46425f' : '#8a84a6');
+  cx.fillStyle = gr; rr(x, y, d.w, d.h, 6); cx.fill();
+  cx.fillStyle = col; cx.globalAlpha = .55 + .45 * o.s; rr(x + d.w / 2 - 3, y + 10, 6, d.h - 20, 3); cx.fill(); cx.globalAlpha = 1;
+}
+function drawPlate(p, W, dk) {
+  const col = SIGC[(() => { for (const o of [...W.doors, ...W.movers, ...W.bridges]) if (o.d.need.includes('p' + p.id)) return o.d.c; return 0; })()];
+  p.press += ((p.on ? 1 : 0) - p.press) * 0.25;
+  cx.fillStyle = dk ? '#3a3452' : '#8d7c6c'; rr(p.x, p.y - 4, p.w, 8, 4); cx.fill();
+  if (p.on) { const gl = cx.createRadialGradient(p.x + p.w / 2, p.y - 6, 0, p.x + p.w / 2, p.y - 6, p.w * .8); gl.addColorStop(0, col + 'aa'); gl.addColorStop(1, col + '00'); cx.fillStyle = gl; cx.fillRect(p.x - p.w * .3, p.y - p.w * .8, p.w * 1.6, p.w * .9); }
+  cx.fillStyle = col; rr(p.x + 5, p.y - 9 + p.press * 5, p.w - 10, 7, 3); cx.fill();
+  cx.fillStyle = 'rgba(255,255,255,.45)'; cx.fillRect(p.x + 10, p.y - 8 + p.press * 5, p.w - 20, 1.6);
+}
+function drawMover(o, dk) {
+  const b = o.b, d = o.d, x = b.position.x - d.w / 2, y = b.position.y - d.h / 2;
+  if (d.lift) {
+    cx.strokeStyle = dk ? 'rgba(220,210,255,.4)' : 'rgba(90,70,60,.45)'; cx.lineWidth = 2; cx.setLineDash([4, 4]);
+    cx.beginPath(); cx.moveTo(x + 8, y); cx.lineTo(x + 8, d.y + d.dy - 80); cx.moveTo(x + d.w - 8, y); cx.lineTo(x + d.w - 8, d.y + d.dy - 80); cx.stroke(); cx.setLineDash([]);
+    woodPlank(x, y, d.w, d.h, dk);
+  } else {
+    const gr = cx.createLinearGradient(0, y, 0, y + d.h + 30);
+    gr.addColorStop(0, dk ? '#8a83b2' : '#c9c2e6'); gr.addColorStop(1, dk ? '#4d466e' : '#8f87b5');
+    cx.fillStyle = gr; cx.beginPath(); cx.moveTo(x, y + 4); cx.quadraticCurveTo(x, y, x + 6, y); cx.lineTo(x + d.w - 6, y); cx.quadraticCurveTo(x + d.w, y, x + d.w, y + 4);
+    cx.quadraticCurveTo(x + d.w * .6, y + d.h + 34, x + d.w / 2, y + d.h + 36); cx.quadraticCurveTo(x + d.w * .4, y + d.h + 34, x, y + 4); cx.fill();
+    const col = SIGC[d.c], on = active(d.need, G.world.sig);
+    cx.fillStyle = col; cx.globalAlpha = on ? .95 : .4; cx.beginPath(); cx.arc(x + d.w / 2, y + d.h + 8, 5, 0, 7); cx.fill(); cx.globalAlpha = 1;
+  }
+  cx.fillStyle = SIGC[d.c]; cx.globalAlpha = .8; cx.fillRect(x + 6, y + 2, d.w - 12, 2.5); cx.globalAlpha = 1;
+}
+function drawBridge(o, dk) {
+  const b = o.b, d = o.d;
+  cx.save(); cx.translate(b.position.x, b.position.y); cx.rotate(b.angle);
+  woodPlank(-d.len / 2, -d.th / 2, d.len, d.th, dk);
+  cx.fillStyle = SIGC[d.c]; cx.globalAlpha = .8; cx.fillRect(-d.len / 2 + 8, -d.th / 2 + 2, d.len - 16, 2); cx.globalAlpha = 1;
+  cx.restore();
+  cx.fillStyle = dk ? '#3b3452' : '#6b5a4a'; cx.beginPath(); cx.arc(d.px, d.py, 7, 0, 7); cx.fill();
+}
+function drawSeesaw(b, dk) {
+  const d = b.rd.d, gy = groundBelow(d.x, d.y + 10);
+  cx.fillStyle = dk ? '#625b84' : '#a49cc0';
+  cx.beginPath(); cx.moveTo(d.x, d.y); cx.lineTo(d.x - 30, gy); cx.lineTo(d.x + 30, gy); cx.closePath(); cx.fill();
+  const o = rot({ x: -b.rd0.x, y: -b.rd0.y }, b.angle);
+  cx.save(); cx.translate(b.position.x + o.x, b.position.y + o.y); cx.rotate(b.angle);
+  woodPlank(-d.len / 2, -7, d.len, 14, dk);
+  cx.fillStyle = dk ? '#80604c' : '#b87d4b'; rr(-d.len / 2, -14, 10, 9, 3); cx.fill(); rr(d.len / 2 - 10, -14, 10, 9, 3); cx.fill();
+  cx.restore();
+  cx.fillStyle = dk ? '#2f2944' : '#6b5a4a'; cx.beginPath(); cx.arc(d.x, d.y, 5, 0, 7); cx.fill();
+}
+function drawRope(b, dk) {
+  const d = b.rd.d, bot = rot({ x: 0, y: d.len / 2 }, b.angle);
+  const ex = b.position.x + bot.x, ey = b.position.y + bot.y;
+  const bend = clamp(b.angularVelocity * 300, -30, 30);
+  const mx = (d.x + ex) / 2 - bend * Math.cos(b.angle), my = (d.y + ey) / 2 - bend * Math.sin(b.angle) * .3;
+  cx.lineCap = 'round';
+  cx.strokeStyle = dk ? '#8f6c58' : '#a87a4f'; cx.lineWidth = 7; cx.beginPath(); cx.moveTo(d.x, d.y); cx.quadraticCurveTo(mx, my, ex, ey); cx.stroke();
+  cx.strokeStyle = dk ? '#c9a07d' : '#e0b27f'; cx.lineWidth = 2; cx.setLineDash([5, 6]); cx.beginPath(); cx.moveTo(d.x, d.y); cx.quadraticCurveTo(mx, my, ex, ey); cx.stroke(); cx.setLineDash([]);
+  cx.fillStyle = dk ? '#8f6c58' : '#a87a4f'; cx.beginPath(); cx.arc(ex, ey, 6, 0, 7); cx.fill();
+  cx.strokeStyle = dk ? '#ccc' : '#6f6a80'; cx.lineWidth = 3; cx.beginPath(); cx.arc(d.x, d.y + 2, 6, 0, 7); cx.stroke();
+}
+function drawLever(l, dk) {
+  const b = l.b, d = l.d, tip = rot({ x: 0, y: -24 }, b.angle);
+  const tx = b.position.x + tip.x, ty = b.position.y + tip.y;
+  const col = SIGC[d.c];
+  cx.lineCap = 'round';
+  cx.strokeStyle = dk ? '#b9b1d6' : '#7d7499'; cx.lineWidth = 7; cx.beginPath(); cx.moveTo(d.x, d.y - 2); cx.lineTo(tx, ty); cx.stroke();
+  cx.fillStyle = l.on ? col : '#f07a6a'; cx.beginPath(); cx.arc(tx, ty, 8, 0, 7); cx.fill();
+  cx.fillStyle = 'rgba(255,255,255,.5)'; cx.beginPath(); cx.arc(tx - 2.5, ty - 2.5, 2.6, 0, 7); cx.fill();
+  cx.fillStyle = dk ? '#4a4366' : '#8f86ab'; cx.beginPath(); cx.ellipse(d.x, d.y, 20, 11, 0, Math.PI, 0); cx.fill();
+  cx.fillStyle = l.on ? col : (dk ? '#2b2640' : '#5f577a'); cx.beginPath(); cx.arc(d.x, d.y - 5, 3, 0, 7); cx.fill();
+  if (d.spring) { cx.fillStyle = dk ? '#cfc7ee' : '#5d5678'; ctxFont(11, 700); cx.textAlign = 'center'; cx.fillText('GIỮ', d.x, d.y + 14); }
+}
+function drawBox(b, dk) {
+  const s = b.rd.s;
+  cx.save(); cx.translate(b.position.x, b.position.y); cx.rotate(b.angle);
+  if (b.rd.t === 'h') {
+    const gr = cx.createLinearGradient(0, -s / 2, 0, s / 2);
+    gr.addColorStop(0, dk ? '#8f8bb0' : '#c5c1d9'); gr.addColorStop(1, dk ? '#5d5980' : '#9893b5');
+    cx.fillStyle = gr; rr(-s / 2, -s / 2, s, s, 6); cx.fill();
+    cx.strokeStyle = dk ? 'rgba(0,0,0,.25)' : 'rgba(60,50,100,.25)'; cx.lineWidth = 2; rr(-s / 2 + 6, -s / 2 + 6, s - 12, s - 12, 4); cx.stroke();
+    cx.strokeStyle = '#a48cff'; cx.lineWidth = 3; cx.beginPath(); cx.moveTo(-8, 8); cx.lineTo(0, -10); cx.lineTo(8, 8); cx.moveTo(-5, 2); cx.lineTo(5, 2); cx.stroke();
+    cx.fillStyle = dk ? '#6aa889' : '#8fcf6e'; rr(-s / 2, -s / 2 - 2, s, 7, 4); cx.fill();
+  } else {
+    const gr = cx.createLinearGradient(0, -s / 2, 0, s / 2);
+    gr.addColorStop(0, dk ? '#b48a68' : '#e9b77e'); gr.addColorStop(1, dk ? '#80604c' : '#c3864f');
+    cx.fillStyle = gr; rr(-s / 2, -s / 2, s, s, 5); cx.fill();
+    cx.strokeStyle = dk ? '#5a4136' : '#9a6234'; cx.lineWidth = 3;
+    rr(-s / 2 + 3, -s / 2 + 3, s - 6, s - 6, 3); cx.stroke();
+    cx.beginPath(); cx.moveTo(-s / 2 + 6, s / 2 - 6); cx.lineTo(s / 2 - 6, -s / 2 + 6); cx.stroke();
+  }
+  cx.restore();
+}
+function portal(x, y, dk) {
+  const cy = y - 52, t = G.t;
+  const gl = cx.createRadialGradient(x, cy, 0, x, cy, 110);
+  gl.addColorStop(0, 'rgba(255,240,255,.75)'); gl.addColorStop(.4, 'rgba(190,170,255,.32)'); gl.addColorStop(1, 'rgba(190,170,255,0)');
+  cx.fillStyle = gl; cx.beginPath(); cx.arc(x, cy, 110, 0, 7); cx.fill();
+  cx.save(); cx.translate(x, cy);
+  for (let i = 0; i < 5; i++) {
+    cx.rotate(t * (0.6 + i * .15) * (i % 2 ? -1 : 1) * .3 + i);
+    cx.strokeStyle = ['#ffffff', '#ffc6e8', '#b6e3ff', '#d3c4ff', '#fff2b8'][i]; cx.globalAlpha = .7; cx.lineWidth = 4 - i * .5;
+    cx.beginPath(); cx.ellipse(0, 0, 34 - i * 4, 50 - i * 6, 0, i, i + 4.2); cx.stroke();
+  }
+  cx.restore(); cx.globalAlpha = 1;
+  const ig = cx.createRadialGradient(x, cy, 0, x, cy, 40);
+  ig.addColorStop(0, 'rgba(255,255,255,.95)'); ig.addColorStop(1, 'rgba(200,180,255,.15)');
+  cx.fillStyle = ig; cx.beginPath(); cx.ellipse(x, cy, 26, 40, 0, 0, 7); cx.fill();
+  for (let i = 0; i < 10; i++) {
+    const a = t * 1.3 + i * .63, r = 30 + ((t * 30 + i * 13) % 40);
+    cx.fillStyle = 'rgba(255,255,255,' + (1 - (r - 30) / 40) + ')'; cx.beginPath(); cx.arc(x + Math.cos(a) * r * .8, cy + Math.sin(a) * r, 2.2, 0, 7); cx.fill();
+  }
+  // bệ
+  cx.fillStyle = dk ? '#6d6890' : '#b9b3cf'; rr(x - 40, y - 8, 80, 10, 5); cx.fill();
+  if (G.inExit) G.inExit.forEach((v, i) => { if (v) { cx.fillStyle = PAL[i].main; cx.beginPath(); cx.arc(x - 12 + i * 24, y - 116, 5, 0, 7); cx.fill(); } });
+}
+function drawChar(c, dk) {
+  const P = PAL[c.i], t = c.trunk, ang = t.angle, v = c.vis;
+  const dead = sim() ? c.dead : c.netDead;
+  const toW = l => { const p = rot(l, ang); return { x: t.position.x + p.x, y: t.position.y + p.y }; };
+  const torso = toW(c.tl), head = toW(c.hl), sh = toW(c.sh);
+  const hipL = toW({ x: c.tl.x - 6, y: c.tl.y + 11 }), hipR = toW({ x: c.tl.x + 6, y: c.tl.y + 11 });
+  const f = c.foot.position, face = c.face;
+  const g = v.g;
+  const grabs = sim() ? c.arms.map(a => !!a.grab) : (c.netGrab || [false, false]);
+  const heldB = sim() ? [G.inputs[c.i].l, G.inputs[c.i].r] : (c.netHeld || [0, 0]);
+  const sq = v.sq;
+  cx.lineCap = 'round'; cx.lineJoin = 'round';
+  const arm = (k, col) => {
+    const a = c.arms[k], hp = handW(a);
+    cx.strokeStyle = col; cx.lineWidth = 9.5;
+    const mx = (sh.x + hp.x) / 2 + (hp.y - sh.y) * .08 * face, my = (sh.y + hp.y) / 2 - (hp.x - sh.x) * .08 * face;
+    cx.beginPath(); cx.moveTo(sh.x, sh.y); cx.quadraticCurveTo(mx, my, hp.x, hp.y); cx.stroke();
+    cx.fillStyle = col; cx.beginPath(); cx.arc(hp.x, hp.y, grabs[k] ? 5.5 : 6.5, 0, 7); cx.fill();
+    if (grabs[k]) { cx.strokeStyle = SIGC[k ? 0 : 1]; cx.lineWidth = 2; cx.beginPath(); cx.arc(hp.x, hp.y, 7.5, 0, 7); cx.stroke(); }
+    else if (heldB[k]) { cx.strokeStyle = 'rgba(255,255,255,.8)'; cx.lineWidth = 1.5; cx.beginPath(); cx.arc(hp.x, hp.y, 8.5, 0, 7); cx.stroke(); }
+  };
+  cx.globalAlpha = dead ? .55 : 1;
+  arm(0, P.shade);
+  // chân
+  const ph = v.ph, moving = g && Math.abs(v.vx || 0) > 30;
+  const feet = [0, 1].map(k => {
+    const p = ph + k * Math.PI;
+    if (moving) return { x: f.x + Math.sin(p) * 9, y: f.y + FOOT_R - 3 - Math.max(0, Math.cos(p)) * 6 };
+    if (!g) return { x: f.x + (k ? 6 : -5) * face, y: f.y + FOOT_R - 4 - (k ? 4 : 0) };
+    return { x: f.x + (k ? 6 : -6), y: f.y + FOOT_R - 3 };
+  });
+  [[hipL, feet[0], P.shade], [hipR, feet[1], P.main]].forEach(([h, ft, col], k) => {
+    cx.strokeStyle = col; cx.lineWidth = 9;
+    const kx = (h.x + ft.x) / 2 + 4 * face, ky = (h.y + ft.y) / 2;
+    cx.beginPath(); cx.moveTo(h.x, h.y); cx.quadraticCurveTo(kx, ky, ft.x, ft.y); cx.stroke();
+    cx.fillStyle = P.shoe; cx.beginPath(); cx.ellipse(ft.x + 2.5 * face, ft.y + 0.5, 7, 4.2, 0, 0, 7); cx.fill();
+  });
+  // thân (méo khi tiếp đất)
+  cx.save(); cx.translate(torso.x, torso.y + 15); cx.rotate(ang); cx.scale(1 + sq * .22, 1 - sq * .2); cx.translate(0, -15);
+  const tg = cx.createLinearGradient(-13, 0, 13, 0);
+  tg.addColorStop(0, P.main); tg.addColorStop(1, P.shade);
+  cx.fillStyle = tg; rr(-13, -15, 26, 30, 12); cx.fill();
+  cx.fillStyle = 'rgba(255,255,255,.35)'; rr(-8 * face - 2, -10, 5, 14, 3); cx.fill();
+  cx.restore();
+  // đầu
+  const hy = head.y + sq * 5;
+  const hg = cx.createRadialGradient(head.x - 4 * face, hy - 5, 2, head.x, hy, 16);
+  hg.addColorStop(0, '#ffffff'); hg.addColorStop(.25, P.main); hg.addColorStop(1, P.shade);
+  cx.fillStyle = hg; cx.beginPath(); cx.ellipse(head.x, hy, 15 * (1 + sq * .1), 14.5 * (1 - sq * .08), ang, 0, 7); cx.fill();
+  // mặt
+  const look = { x: Math.cos(c.aim) * 1.6, y: Math.sin(c.aim) * 1.4 };
+  const fx = head.x + face * 3.5, fy = hy + 1;
+  const vy = v.vy || 0;
+  cx.fillStyle = '#3b3452';
+  if (v.blink < 0 || dead) { cx.strokeStyle = '#3b3452'; cx.lineWidth = 1.8; cx.beginPath(); cx.moveTo(fx - 7, fy - 2); cx.lineTo(fx - 3, fy - 2); cx.moveTo(fx + 3, fy - 2); cx.lineTo(fx + 7, fy - 2); cx.stroke(); }
+  else { cx.beginPath(); cx.ellipse(fx - 5 + look.x, fy - 2 + look.y, 2, 2.8, 0, 0, 7); cx.ellipse(fx + 5 + look.x, fy - 2 + look.y, 2, 2.8, 0, 0, 7); cx.fill(); }
+  cx.fillStyle = 'rgba(255,130,150,.4)'; cx.beginPath(); cx.arc(fx - 9, fy + 3, 2.8, 0, 7); cx.arc(fx + 9, fy + 3, 2.8, 0, 7); cx.fill();
+  cx.strokeStyle = '#3b3452'; cx.lineWidth = 1.6;
+  if (!g && vy > 420 || dead) { cx.beginPath(); cx.ellipse(fx, fy + 5, 2.4, 3, 0, 0, 7); cx.stroke(); }
+  else if (grabs[0] || grabs[1]) { cx.beginPath(); cx.moveTo(fx - 3, fy + 5); cx.lineTo(fx + 3, fy + 5); cx.stroke(); }
+  else { cx.beginPath(); cx.arc(fx, fy + 3, 3.2, .3, Math.PI - .3); cx.stroke(); }
+  arm(1, P.main);
+  cx.globalAlpha = 1;
+  // tên
+  const nm = c.i === myIdx() ? (Shell.myName || 'Bạn') : (Shell.oppName || 'Đồng đội');
+  ctxFont(12, 700); cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  const tw = cx.measureText(nm).width + 14;
+  cx.fillStyle = dk ? 'rgba(20,16,40,.5)' : 'rgba(255,255,255,.6)'; rr(head.x - tw / 2, hy - 40, tw, 17, 8); cx.fill();
+  cx.fillStyle = c.i ? '#c98516' : (dk ? '#fff' : '#6b6280'); cx.fillText(nm, head.x, hy - 31.5);
+}
+
+/* ---------- khởi động ---------- */
+new ResizeObserver(resize).observe(wrap); resize();
+requestAnimationFrame(frame);
+
+Shell.init({
+  id: 'ragdoll',
+  colors: [C_HOST, C_GUEST],
+  sides: ['Bánh Bao', 'Bánh Chuối'],
+  howto: [
+    'Hai bạn là hai nhân vật mềm oặt, lắc lư. Cùng nhau đưa <b>cả hai</b> tới cổng sáng cuối mỗi ải.',
+    '<b>Giữ chuột trái / phải</b> (hoặc <b>J / K</b>): tay trái / phải vươn về phía con trỏ và <b>bám chặt</b> thứ nó chạm vào — mép đá, thùng, cần gạt, dây, hoặc bạn mình. Thả nút để buông.',
+    'Đang bám mà <b>giữ W</b> sẽ đu người lên mép. Đứng lên đầu bạn để với tới vách cao, kéo thùng lên bàn nhấn để mở cửa.',
+    'Rơi khỏi đảo sẽ hồi sinh ở đèn lồng gần nhất (bấm <b>R</b> để tự hồi sinh khi bị kẹt).',
+    'Qua 3 ải nhanh nhất có thể!'
+  ],
+  keys: [[['A', 'D'], 'đi'], [['W', 'Space'], 'nhảy / đu lên'], ['Chuột', 'ngắm tay'], [['Chuột trái', 'Chuột phải'], 'bám tay trái / phải'], [['J', 'K'], 'bám bằng phím'], ['R', 'hồi sinh']],
+  onStart() { resetMatch(); if (Shell.isHost) hostStart(); },
+  onRematch() { resetMatch(); if (Shell.isHost) hostStart(); },
+  onStop() { clearTimers(); G.phase = 'idle'; G.world = null; },
+  onTheme() {},
+  onMessage(m) {
+    switch (m.t) {
+      case 'start': if (!Shell.isHost) { resetMatch(); } break;
+      case 'lvl': if (!Shell.isHost) loadLevel(m.lv, m.lv === 0 || !G.world); break;
+      case 's': if (!Shell.isHost) onSnap(m); break;
+      case 'i': if (Shell.isHost && !G.botCtl) { const q = G.inputs[1]; q.mx = clamp(+m.m || 0, -1, 1); q.jh = m.h ? 1 : 0; q.jc = m.c | 0; q.l = m.l ? 1 : 0; q.r = m.r ? 1 : 0; q.a = (+m.a || 0) / 100; } break;
+      case 'rq': if (Shell.isHost && G.phase === 'play' && m.lv === G.lv) killChar(G.chars[1], false); break;
+      case 'cp': if (!Shell.isHost && G.world && m.lv === G.lv && m.n > G.cp) { G.cp = m.n; onCp(m.n); } break;
+      case 'fall': if (!Shell.isHost && G.world && m.lv === G.lv) onFall(m.i, m.f); break;
+      case 'done': if (!Shell.isHost && G.world) onDone(m); break;
+      case 'end': if (!Shell.isHost) onEnd(m); break;
+    }
+  }
+});
+hud();
+// móc kiểm thử
+window.__rd = { G, LEVELS, step, loadLevel, killChar, placeChar, handW, shoulderW, consts: { DT, RUN, JUMP_V },
+  solo(lv) { G.solo = true; resetMatch(); loadLevel(lv || 0, false); G.phase = 'play'; } };
+})();
+</script>
+</body>
+</html>
