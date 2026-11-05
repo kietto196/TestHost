@@ -350,7 +350,6 @@ button{font:inherit;color:inherit;cursor:pointer}
 (() => {
 'use strict';
 const N = 15, WIN = 5, TURN_MS = 30000;
-const LOBBY_ID = 'testhost-kietto196-caro-lobby-v1'; // dùng cho chế độ P2P (khi không có server)
 const $ = s => document.querySelector(s);
 const store = {
   get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
@@ -438,93 +437,168 @@ function serverTransport(cb){
   };
 }
 
-/* ===================== Kết nối: P2P (PeerJS, cho hosting tĩnh) ===================== */
-let peerLib = null;
-function loadPeer(){
-  if (peerLib) return peerLib;
-  peerLib = new Promise((res, rej) => {
+/* ===================== Kết nối Online (máy chủ MQTT công cộng, chơi được khác mạng) ===================== */
+const BROKERS = (new URLSearchParams(location.search).get('broker') ||
+  'wss://broker.emqx.io:8084/mqtt,wss://broker.hivemq.com:8884/mqtt').split(',');
+const TOPIC = 'kietto196-testhost/caro/v2/';
+let mqttLib = null;
+function loadMqtt(){
+  if (mqttLib) return mqttLib;
+  mqttLib = new Promise((res, rej) => {
+    if (window.mqtt) return res(window.mqtt);
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-    s.onload = () => res(window.Peer); s.onerror = () => { peerLib = null; rej(); };
+    s.src = 'https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
+    s.onload = () => res(window.mqtt); s.onerror = () => { mqttLib = null; rej(); };
     document.head.appendChild(s);
   });
-  return peerLib;
+  return mqttLib;
 }
-function p2pTransport(cb){
-  let gen = 0, peers = [], conn = null, hb = null;
-  const kill = p => { try { p.destroy(); } catch(e){} peers = peers.filter(x => x !== p); };
-  const cleanup = () => { peers.slice().forEach(kill); conn = null; clearInterval(hb); hb = null; };
-  const retry = (g, ms) => setTimeout(() => { if (g === gen) tryHost(g); }, ms + Math.random() * 700);
+function connectBroker(lib, id, idx = 0){
+  return new Promise((res, rej) => {
+    if (idx >= BROKERS.length) return rej(new Error('no broker'));
+    let c, done = false;
+    const fail = () => { if (done) return; done = true; clearTimeout(to); try { c.end(true); } catch(e){} connectBroker(lib, id, idx + 1).then(res, rej); };
+    const to = setTimeout(fail, 8000);
+    try {
+      c = lib.connect(BROKERS[idx], {
+        clientId: 'caro_' + id, clean: true, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 7000,
+        will: { topic: TOPIC + 'gone/' + id, payload: '1', qos: 0, retain: false }
+      });
+    } catch(e){ return fail(); }
+    c.once('connect', () => { if (done) return; done = true; clearTimeout(to); res(c); });
+    c.on('error', () => { if (!done) fail(); });
+  });
+}
 
-  function attach(c, role, g){
-    conn = c; let seen = Date.now();
-    const gone = () => { if (g !== gen) return; gen++; cleanup(); cb.onLeft(); };
-    c.on('data', d => {
-      if (g !== gen) return; seen = Date.now();
-      if (!d || d.t === '_ping' || d.t === '_accept' || d.t === '_busy') return;
-      cb.onMessage(d);
-    });
-    c.on('close', gone);
+function onlineTransport(cb){
+  let gen = 0, c = null, me = null, opp = null, state = 'idle', lobbyVal = null;
+  let joinTarget = null, joinTimer = null, hb = null, seen = 0;
+  const tried = new Set();
+  const pub = (topic, obj, opts = { qos:1 }) => {
+    try { if (c) c.publish(TOPIC + topic, obj == null ? '' : JSON.stringify(obj), opts); } catch(e){}
+  };
+  const toUser = (id, obj) => pub('u/' + id, Object.assign({ f: me }, obj));
+  const enterLobby = () => pub('lobby', { id: me }, { qos:1, retain:true });
+
+  // Xem "phòng chờ": có người đang chờ → xin vào trận; trống → mình đứng chờ.
+  function decide(){
+    if (state === 'matched' || state === 'idle' || state === 'connecting') return;
+    const v = lobbyVal;
+    if (v && v.id && v.id !== me && !tried.has(v.id)){
+      state = 'joining'; joinTarget = v.id;
+      toUser(v.id, { t:'join' });
+      clearTimeout(joinTimer);
+      joinTimer = setTimeout(() => {
+        if (state === 'joining' && joinTarget === v.id){ tried.add(v.id); decide(); }
+      }, 6000);
+    } else {
+      state = 'waiting'; joinTarget = null; enterLobby(); cb.onWaiting();
+    }
+  }
+  function matchWith(id, role){
+    state = 'matched'; opp = id; clearTimeout(joinTimer); seen = Date.now();
+    try { c.subscribe(TOPIC + 'gone/' + id, { qos:0 }); } catch(e){}
+    if (lobbyVal && lobbyVal.id === me) pub('lobby', null, { qos:1, retain:true });
     hb = setInterval(() => {
-      if (g !== gen) return;
-      try { c.send({ t:'_ping' }); } catch(e){}
-      if (Date.now() - seen > 15000) gone();
-    }, 3000);
+      toUser(opp, { t:'ping' });
+      if (Date.now() - seen > 20000) lost();
+    }, 5000);
     cb.onMatched(role);
   }
-
-  // Thử giữ "phòng chờ" chung. Nếu đã có người giữ → mình là người vào sau.
-  function tryHost(g){
-    const p = new window.Peer(LOBBY_ID, { debug:0 }); peers.push(p);
-    let matched = false;
-    p.on('open', () => { if (g === gen) cb.onWaiting(); });
-    p.on('disconnected', () => { if (g === gen && !matched) { try { p.reconnect(); } catch(e){} } });
-    p.on('connection', c => {
-      if (g !== gen) return;
-      if (matched) { c.on('open', () => { try { c.send({ t:'_busy' }); } catch(e){} setTimeout(() => c.close(), 400); }); return; }
-      matched = true;
-      const to = setTimeout(() => { if (g === gen && !c.open) { matched = false; try { c.close(); } catch(e){} } }, 10000);
-      c.on('open', () => {
-        clearTimeout(to); if (g !== gen) return;
-        c.send({ t:'_accept' });
-        attach(c, 'host', g);
-        // Nhả "phòng chờ" để cặp khác dùng; kết nối hiện tại vẫn giữ nguyên.
-        setTimeout(() => { try { p.disconnect(); } catch(e){} }, 800);
-      });
-    });
-    p.on('error', e => {
-      if (g !== gen) return;
-      if (e.type === 'unavailable-id') { kill(p); tryGuest(g); }
-      else if (!matched) { kill(p); retry(g, 2000); }
-    });
-  }
-  function tryGuest(g){
-    const p = new window.Peer({ debug:0 }); peers.push(p);
-    let done = false;
-    const fail = ms => { if (done) return; done = true; kill(p); retry(g, ms); };
-    p.on('open', () => {
-      if (g !== gen) return;
-      cb.onWaiting();
-      const c = p.connect(LOBBY_ID, { reliable:true });
-      const to = setTimeout(() => { if (g === gen) fail(300); }, 9000);
-      c.on('data', d => {
-        if (g !== gen || done) return;
-        if (d && d.t === '_accept') { done = true; clearTimeout(to); attach(c, 'guest', g); }
-        else if (d && d.t === '_busy') { clearTimeout(to); fail(900); }
-      });
-    });
-    p.on('error', e => { if (g === gen) fail(e.type === 'peer-unavailable' ? 200 : 2000); });
+  function lost(){ if (state !== 'matched') return; shutdown(); cb.onLeft(); }
+  function shutdown(){
+    gen++; clearInterval(hb); hb = null; clearTimeout(joinTimer);
+    if (c){
+      if (state === 'waiting' && (!lobbyVal || lobbyVal.id === me)) pub('lobby', null, { qos:1, retain:true });
+      const old = c; c = null;
+      setTimeout(() => { try { old.end(false); } catch(e){} }, 50);
+    }
+    state = 'idle'; opp = null;
   }
 
   return {
-    mode: 'p2p',
+    mode: 'online',
     async start(){
+      if (c) shutdown();
       const g = ++gen;
-      try { await loadPeer(); } catch(e){ cb.onError('Không tải được thư viện kết nối. Kiểm tra mạng.'); return; }
-      if (g === gen) tryHost(g);
+      state = 'connecting'; me = rid(); opp = null; lobbyVal = null; tried.clear();
+      let client;
+      try { const lib = await loadMqtt(); client = await connectBroker(lib, me); }
+      catch(e){ if (g === gen){ state = 'idle'; cb.onError('Không kết nối được máy chủ ghép trận online.', true); } return; }
+      if (g !== gen){ try { client.end(true); } catch(e){} return; }
+      c = client;
+      client.on('message', (topic, buf) => {
+        if (g !== gen) return;
+        const t = topic.slice(TOPIC.length), s = buf.toString();
+        if (t === 'lobby'){
+          let v = null; try { v = s ? JSON.parse(s) : null; } catch(e){}
+          lobbyVal = v;
+          if (state === 'waiting'){
+            if (!v) enterLobby();              // ai đó xoá nhầm → đứng chờ lại
+            else if (v.id !== me) decide();    // có người vừa vào chờ → ghép với họ
+          }
+          return;
+        }
+        if (opp && t === 'gone/' + opp) return lost();
+        if (t !== 'u/' + me) return;
+        let m; try { m = JSON.parse(s); } catch(e){ return; }
+        if (!m || !m.f) return;
+        if (m.t === 'join'){
+          const mutual = state === 'joining' && m.f === joinTarget; // hai người xin vào trận của nhau cùng lúc
+          if (state === 'waiting' || (mutual && me < m.f)){ toUser(m.f, { t:'accept' }); matchWith(m.f, 'host'); }
+          else if (mutual) { /* người kia sẽ chấp nhận */ }
+          else if (m.f !== opp) toUser(m.f, { t:'busy' });
+          return;
+        }
+        if (m.t === 'accept'){
+          if (state === 'joining' && m.f === joinTarget) matchWith(m.f, 'guest');
+          else if (m.f !== opp) toUser(m.f, { t:'g', m:{ t:'leave' } });
+          return;
+        }
+        if (m.t === 'busy'){
+          if (state === 'joining' && m.f === joinTarget){
+            clearTimeout(joinTimer); state = 'deciding';
+            setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 700 + Math.random() * 900);
+          }
+          return;
+        }
+        if (m.f !== opp) return;
+        seen = Date.now();
+        if (m.t === 'g') cb.onMessage(m.m);
+      });
+      client.on('connect', () => { if (g === gen) seen = Date.now(); }); // kết nối lại sau khi rớt mạng
+      client.subscribe([TOPIC + 'u/' + me, TOPIC + 'lobby'], { qos:1 }, () => {
+        if (g !== gen) return;
+        state = 'deciding';
+        setTimeout(() => { if (g === gen && state === 'deciding') decide(); }, 900);
+      });
     },
-    send(msg){ if (conn && conn.open) { try { conn.send(msg); } catch(e){} } },
-    stop(){ gen++; cleanup(); }
+    send(msg){ if (state === 'matched' && opp) toUser(opp, { t:'g', m:msg }); },
+    stop(){ shutdown(); }
+  };
+}
+
+// Ưu tiên kết nối online; nếu không vào được máy chủ online thì dùng server.js (nếu đang chạy).
+function autoTransport(cb){
+  const srvP = hasServer();
+  let cur = null;
+  const setBadge = online => {
+    $('#modeBadge').innerHTML = '<i></i>' + (online ? 'Online' : 'Máy chủ nội bộ');
+    $('#modeBadge').title = online ? 'Ghép trận qua Internet — chơi được với người ở mạng khác'
+                                   : 'Ghép trận qua server.js — chỉ người vào được máy chủ này mới chơi cùng';
+  };
+  const online = onlineTransport(Object.assign({}, cb, {
+    async onError(text, connectFail){
+      if (connectFail && cur === online && await srvP && S.phase === 'waiting'){
+        cur = serverTransport(cb); setBadge(false); cur.start();
+      } else cb.onError(text);
+    }
+  }));
+  setBadge(true);
+  return {
+    start(){ cur = online; setBadge(true); online.start(); },
+    send(m){ if (cur) cur.send(m); },
+    stop(){ if (cur) cur.stop(); }
   };
 }
 
@@ -587,7 +661,9 @@ function findMatch(){
   S.myName = name; store.set('caro-name', name);
   S.phase = 'waiting'; S.waitStart = Date.now();
   show('waiting');
-  $('#inviteUrl').textContent = location.href.split('#')[0];
+  const isFile = location.protocol === 'file:';
+  $('#inviteUrl').textContent = isFile ? 'Gửi file index.html này cho bạn bè' : location.href.split('#')[0].split('?')[0];
+  $('#copyBtn').classList.toggle('hidden', isFile);
   S.net.start();
 }
 $('#findBtn').onclick = () => { if (S.net) findMatch(); };
@@ -842,13 +918,8 @@ window.addEventListener('pagehide', () => {
 /* ----- Khởi động ----- */
 $('#nameInput').value = store.get('caro-name') || '';
 buildWaitArt();
-(async () => {
-  const srv = await hasServer();
-  S.net = srv ? serverTransport(cb) : p2pTransport(cb);
-  $('#modeBadge').innerHTML = '<i></i>' + (srv ? 'Máy chủ' : 'Online P2P');
-  $('#modeBadge').title = srv ? 'Ghép trận qua máy chủ server.js' : 'Ghép trận trực tiếp giữa 2 trình duyệt (không cần máy chủ riêng)';
-  if (!srv) loadPeer().catch(() => {});
-})();
+S.net = autoTransport(cb);
+loadMqtt().catch(() => {});
 })();
 </script>
 </body>

@@ -8,22 +8,18 @@ Cờ caro 2 người, mỗi người một máy. Người vào trang đầu tiê
 
 ## Cách chạy
 
-### Cách 1 — Dùng máy chủ Node.js (ổn định nhất)
-Cần cài Node.js 16 trở lên, không cần `npm install`.
+Trang ghép trận qua Internet (dùng máy chủ MQTT công cộng miễn phí: broker.emqx.io, dự phòng broker.hivemq.com), nên **hai người ở hai mạng khác nhau vẫn chơi được với nhau**, không cần chạy server riêng. Góc trên bên phải trang hiện chữ **"Online"** khi đang ở chế độ này.
 
-```bash
-node server.js        # hoặc: npm start
-```
+Chỉ cần mỗi người mở được `index.html`:
 
-Mở `http://localhost:3000` trên máy này, máy kia (cùng mạng Wi‑Fi) mở địa chỉ `http://<IP-máy-bạn>:3000` được in ra trong terminal.
-Muốn chơi qua Internet: deploy thư mục này lên một dịch vụ chạy Node (Render, Railway, Fly.io, VPS…), lệnh chạy là `npm start`, cổng lấy từ biến `PORT`.
+- **Cách khuyên dùng — GitHub Pages:** push repo lên GitHub → Settings → Pages → Source: *Deploy from a branch*, chọn nhánh `main`, thư mục `/ (root)` → Save. Sau 1–2 phút có link dạng `https://kietto196.github.io/TestHost/`, gửi link đó cho bạn bè.
+- Hoặc gửi luôn file `index.html` cho bạn: mỗi người mở file trên máy mình (bấm đúp) vẫn ghép trận được với nhau.
+- Netlify, Vercel hay bất kỳ hosting tĩnh nào khác cũng được.
 
-### Cách 2 — Hosting tĩnh (GitHub Pages, Netlify…), không cần server
-Chỉ cần đưa `index.html` lên. Khi không thấy `server.js`, trang tự chuyển sang chế độ **Online P2P**: hai trình duyệt tìm nhau qua dịch vụ miễn phí PeerJS rồi kết nối trực tiếp với nhau. Góc trên bên phải trang cho biết đang ở chế độ nào ("Máy chủ" hay "Online P2P").
-
-Lưu ý chế độ P2P: phụ thuộc dịch vụ PeerJS công cộng, và một số mạng (Wi‑Fi công ty, 4G) có thể chặn kết nối trực tiếp. Nếu gặp lỗi, dùng Cách 1.
+### server.js (không bắt buộc)
+`node server.js` (cổng 3000) chỉ là phương án dự phòng: trang chỉ dùng nó khi không kết nối được máy chủ online, và khi đó chỉ người vào được máy của bạn (thường là cùng mạng) mới chơi cùng.
 
 ## Các file
 - `index.html` — giao diện và luật chơi
-- `server.js` — máy chủ ghép trận (Node.js thuần)
+- `server.js` — máy chủ dự phòng chạy trong mạng nội bộ (không bắt buộc)
 - `package.json` — để `npm start` và deploy
