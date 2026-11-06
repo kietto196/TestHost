@@ -60,7 +60,7 @@
     }
     function sendAck() {
       if (ackTimer) return;
-      ackTimer = setTimeout(() => { ackTimer = null; if (opp) toUser(opp, { t: 'ack', a: recvNext - 1 }, { qos: 0 }); }, 15);
+      ackTimer = setTimeout(() => { ackTimer = null; if (opp) toUser(opp, { t: 'ack', a: recvNext - 1, g: recvBuf.size ? 1 : 0 }, { qos: 0 }); }, 15);
     }
     function onReliable(m) {
       const n = m.s | 0;
@@ -73,7 +73,7 @@
     }
     function retransmit() {
       if (state !== 'matched' || !opp) return;
-      const now = performance.now(), wait = Math.max(250, Math.min(1500, api.rtt * 1.6));
+      const now = performance.now(), wait = Math.max(220, Math.min(900, api.rtt * 1.4));
       let sent = 0;
       for (const [n, e] of unacked) {
         if (now - e.at < wait) continue;
@@ -83,6 +83,7 @@
     }
     const tried = new Set();
     const api = { rtt: 120, role: null, get state() { return state; } };
+    const dbg = (...a) => { try { (window.__netlog = window.__netlog || []).push((performance.now() / 1000).toFixed(2) + ' ' + a.join(' ')); } catch (e) {} };
 
     const pub = (topic, obj, opts = { qos: 1 }) => {
       try { if (c) c.publish(TOPIC + topic, obj == null ? '' : JSON.stringify(obj), opts); } catch (e) {}
@@ -93,16 +94,18 @@
     function decide() {
       if (state === 'matched' || state === 'idle' || state === 'connecting') return;
       const v = lobbyVal;
-      if (v && v.id && v.id !== me && !tried.has(v.id)) {
+      dbg('decide', state, 'lobby=', v && v.id, 'me=', me);
+      const stale = v && v.ts && Math.abs(Date.now() - v.ts) > 45000; // người chờ cũ đã tắt máy mà không dọn
+      if (v && v.id && v.id !== me && !tried.has(v.id) && !stale) {
         state = 'joining'; joinTarget = v.id;
         toUser(v.id, { t: 'join', name: myName });
         clearTimeout(joinTimer);
         joinTimer = setTimeout(() => {
           if (state === 'joining' && joinTarget === v.id) { tried.add(v.id); decide(); }
-        }, 6000);
+        }, 4500);
       } else {
         state = 'waiting'; joinTarget = null; enterLobby();
-        clearInterval(refresh); refresh = setInterval(() => { if (state === 'waiting') enterLobby(); }, 25000);
+        clearInterval(refresh); refresh = setInterval(() => { if (state === 'waiting') enterLobby(); }, 15000);
         cb.onWaiting && cb.onWaiting();
       }
     }
@@ -148,13 +151,17 @@
       let client;
       try {
         const lib = await loadMqtt();
-        client = await connectBroker(lib, gameId + '_' + me, { topic: TOPIC + 'gone/' + me, payload: '1', qos: 0, retain: false });
+        for (let tryN = 0; ; tryN++) {   // thử lại vài lần nếu mạng chập chờn
+          try { client = await connectBroker(lib, gameId + '_' + me + (tryN ? '_' + tryN : ''), { topic: TOPIC + 'gone/' + me, payload: '1', qos: 0, retain: false }); break; }
+          catch (er) { dbg('connect try failed', tryN); if (tryN >= 2 || g !== gen) throw er; await new Promise(r => setTimeout(r, 800 + tryN * 700)); }
+        }
       } catch (e) {
+        dbg('connect failed', e && e.message);
         if (g === gen) { state = 'idle'; cb.onError && cb.onError('Không kết nối được máy chủ ghép trận online. Kiểm tra Internet rồi thử lại.'); }
         return;
       }
       if (g !== gen) { try { client.end(true); } catch (e) {} return; }
-      c = client;
+      c = client; dbg('connected');
       client.on('message', (topic, buf) => {
         if (g !== gen) return;
         const t = topic.slice(TOPIC.length), s = buf.toString();
@@ -171,6 +178,7 @@
         if (t !== 'u/' + me) return;
         let m; try { m = JSON.parse(s); } catch (e) { return; }
         if (!m || !m.f) return;
+        if (m.t !== 'r' && m.t !== 'g' && m.t !== 'ack' && m.t !== 'ping' && m.t !== 'pong') dbg('recv', m.t, 'from', m.f, 'state', state);
         if (m.t === 'join') {
           const mutual = state === 'joining' && m.f === joinTarget;
           if (state === 'waiting' || (mutual && me < m.f)) { toUser(m.f, { t: 'accept' }); matchWith(m.f, 'host'); }
@@ -202,6 +210,9 @@
         if (m.t === 'ack') {
           const a = m.a | 0;
           for (const n of [...unacked.keys()]) if (n <= a) unacked.delete(n);
+          // bên nhận báo thiếu tin → gửi lại ngay tin bị thiếu
+          const miss = unacked.get(a + 1);
+          if (m.g && miss && performance.now() - miss.at > 120) { miss.at = performance.now(); toUser(opp, { t: 'r', s: a + 1, m: miss.m }, { qos: 0 }); }
           return;
         }
         if (m.t === 'g') cb.onMessage && cb.onMessage(m.m);

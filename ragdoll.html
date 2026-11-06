@@ -323,7 +323,7 @@ function makeChar(W, i, x, footY) {
       collisionFilter: { group, category: CAT_ARM, mask: CAT_STATIC | CAT_DYN | CAT_CHAR } });
     Body.setMass(a, 0.35);
     const c = Constraint.create({ bodyA: trunk, pointA: { x: sh.x, y: sh.y }, bodyB: a, pointB: { x: -17, y: 0 }, length: 0, stiffness: 0.9, damping: 0.1 });
-    return { b: a, c, grab: null, cool: 0, k };
+    return { b: a, c, grab: null, cool: 0, k, ci: i };
   });
   const bodies = [trunk, foot, arms[0].b, arms[1].b];
   const rel = bodies.map(b => ({ x: b.position.x - x, y: b.position.y - y }));
@@ -348,10 +348,26 @@ function placeChar(c, x, footY) {
 }
 const shoulderW = c => { const p = rot(c.sh, c.trunk.angle); return { x: c.trunk.position.x + p.x, y: c.trunk.position.y + p.y }; };
 const handW = a => { const p = rot({ x: 17, y: 0 }, a.b.angle); return { x: a.b.position.x + p.x, y: a.b.position.y + p.y }; };
-function release(a) {
+function release(a, quiet) {
   if (!a.grab) return;
   Composite.remove(G.world.engine.world, a.grab.con);
   a.grab = null; a.cool = 8;
+  if (!quiet && !G.solo && G.chars[a.ci] && isLocal(G.chars[a.ci])) Shell.send({ t: 'gb', l: G.lv, i: a.ci, k: a.k, id: -1 });
+}
+const isLocal = c => G.solo || c.i === myIdx();
+const r1 = v => Math.round(v * 10) / 10;
+// tay của người kia bám (đồng bộ từ máy bên kia)
+function remoteGrab(m) {
+  if (!G.world || m.l !== G.lv) return;
+  const c = G.chars[m.i]; if (!c || isLocal(c)) return;
+  const a = c.arms[m.k]; if (!a) return;
+  release(a, true);
+  if (m.id < 0) return;
+  const tgt = G.ids[m.id]; if (!tgt) return;
+  const con = Constraint.create({ bodyA: a.b, pointA: rot(m.pa, a.b.angle), bodyB: tgt, pointB: rot(m.pb, tgt.angle), length: 0, stiffness: 0.5, damping: 0.08 });
+  Composite.add(G.world.engine.world, con);
+  const kind = tgt.rd ? tgt.rd.kind : 'solid';
+  a.grab = { con, body: tgt, anchor: true, kind, remote: true };
 }
 function releaseAll(c) { c.arms.forEach(release); }
 
@@ -375,6 +391,8 @@ function tryGrab(c, a) {
     Composite.add(G.world.engine.world, con);
     const kind = tgt.rd ? tgt.rd.kind : 'solid';
     a.grab = { con, body: tgt, anchor: tgt.isStatic || kind === 'rope' || kind === 'seesaw' || kind === 'lever' || kind === 'char' || tgt.mass >= 6, kind };
+    if (!G.solo && tgt.rid != null) Shell.send({ t: 'gb', l: G.lv, i: c.i, k: a.k, id: tgt.rid,
+      pa: (q => ({ x: r1(q.x), y: r1(q.y) }))(rot(con.pointA, -a.b.angle)), pb: (q => ({ x: r1(q.x), y: r1(q.y) }))(rot(con.pointB, -tgt.angle)) });
     return true;
   }
   return false;
@@ -479,11 +497,14 @@ function signal(W) {
 }
 const active = (need, s) => need.some(n => s[n]);
 function step() {
-  const W = G.world, E = W.engine;
+  const W = G.world, E = W.engine, auth = sim();
   G.tick++;
   const playing = G.phase === 'play';
-  if (playing) G.ltick++;
-  G.chars.forEach((c, i) => ctrlChar(c, playing ? G.inputs[i] : { ...blankInput(), jc: G.inputs[i].jc }));
+  if (playing && auth) G.ltick++;
+  G.chars.forEach((c, i) => { if (isLocal(c)) ctrlChar(c, playing ? G.inputs[i] : { ...blankInput(), jc: G.inputs[i].jc }); });
+  driveRemote();
+  let heavy = [];
+  if (auth) {
   // bàn nhấn
   const pressers = [...W.boxes]; G.chars.forEach(c => { if (!c.dead) pressers.push(c.trunk, c.foot); });
   W.plates.forEach(p => {
@@ -522,14 +543,17 @@ function step() {
     const px = o.b.position.x, py = o.b.position.y;
     applyKin(o);
     const dx = o.b.position.x - px, dy = o.b.position.y - py;
-    if (dx || dy) G.chars.forEach(c => { if (c.gBody === o.b && G.tick - c.gTick < 3) c.bodies.forEach(b => Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })); });
+    carry(o.b, dx, dy);
   });
   // khối đá nặng chỉ trượt khi CẢ HAI người cùng đẩy
-  const heavy = W.boxes.filter(bx => bx.rd.t === 'h').map(bx => {
+  heavy = W.boxes.filter(bx => bx.rd.t === 'h').map(bx => {
     const t = bx.rd.touch || [], both = G.tick - (t[0] || -99) < 8 && G.tick - (t[1] || -99) < 8;
     return { bx, both, x: bx.position.x, a: bx.angle };
   });
+  } else kinFromSnap();
   Engine.update(E, DT);
+  // nhân vật của máy kia: không để va chạm cục bộ hất văng (máy chủ của nó mới quyết định)
+  if (!G.solo) G.chars.forEach(c => { if (!isLocal(c)) c.bodies.forEach(bd => { const v = bd.velocity, sp = Math.hypot(v.x, v.y); if (sp > 9) Body.setVelocity(bd, { x: v.x * 9 / sp, y: v.y * 9 / sp }); }); });
   heavy.forEach(h => {
     const pitted = W.plates.some(p => Math.abs(p.x + p.w / 2 - h.bx.position.x) < p.w / 2 + 8);
     if (!h.both && !pitted && h.bx.position.y < W.L.deathY) { Body.setPosition(h.bx, { x: h.x, y: h.bx.position.y }); Body.setVelocity(h.bx, { x: 0, y: h.bx.velocity.y }); Body.setAngle(h.bx, h.a); Body.setAngularVelocity(h.bx, 0); }
@@ -541,8 +565,11 @@ function step() {
     for (const c of G.chars) {
       const f = c.foot;
       const pa = p.bodyA.parent, pb = p.bodyB.parent;
-      if (pa.rd && pa.rd.kind === 'box' && pb.rd && pb.rd.ci === c.i) { c.boxT = G.tick; (pa.rd.touch = pa.rd.touch || [])[c.i] = G.tick; }
-      else if (pb.rd && pb.rd.kind === 'box' && pa.rd && pa.rd.ci === c.i) { c.boxT = G.tick; (pb.rd.touch = pb.rd.touch || [])[c.i] = G.tick; }
+      const oo = pb.rd && pb.rd.ci === c.i ? pa : pa.rd && pa.rd.ci === c.i ? pb : null;
+      if (oo && oo.rd && oo.rd.kind !== 'char' && !oo.isStatic) {
+        oo.rd.lt = G.tick;
+        if (oo.rd.kind === 'box') { c.boxT = G.tick; (oo.rd.touch = oo.rd.touch || [])[c.i] = G.tick; }
+      }
       if (p.bodyA !== f && p.bodyB !== f) continue;
       const other = p.bodyA === f ? p.bodyB : p.bodyA;
       const sup = p.collision.supports;
@@ -552,8 +579,9 @@ function step() {
       }
     }
   }
-  // rơi khỏi đảo / thùng rơi
   const L = W.L;
+  if (!auth) { guestAfter(); if (!G.solo && G.tick % SNAP_EVERY === 0) sendStream(); return; }
+  // rơi khỏi đảo / thùng rơi
   W.boxes.forEach(b => {
     if (b.position.y > L.deathY + 100) {
       G.chars.forEach(c => c.arms.forEach(a => { if (a.grab && a.grab.body === b) release(a); }));
@@ -582,71 +610,134 @@ function step() {
     G.inExit = G.chars.map(inExit);
     if (G.inExit.every(Boolean)) { if (++G.exitT >= 24) levelDone(); } else G.exitT = 0;
   }
-  if (!G.solo && Shell.isHost && G.tick % SNAP_EVERY === 0) sendSnap();
+  if (!G.solo && G.tick % SNAP_EVERY === 0) sendSnap();
 }
 function cpPos(i) { const [x, y] = G.world.L.cps[G.cp]; return { x: x + (i ? 26 : -26), y }; }
 function killChar(c, fell) {
   if (c.dead) return;
-  c.dead = 48; releaseAll(c);
+  c.dead = 48; c.epoch = (c.epoch || 0) + 1; releaseAll(c);
   G.chars.forEach(o => o !== c && o.arms.forEach(a => { if (a.grab && a.grab.body.rd && a.grab.body.rd.ci === c.i) release(a); }));
   if (fell) G.falls[c.i]++;
-  send({ t: 'fall', lv: G.lv, i: c.i, f: G.falls });
+  send({ t: 'fall', lv: G.lv, i: c.i, f: G.falls, e: c.epoch });
   onFall(c.i, G.falls);
 }
 
-/* ---------- mạng: ảnh chụp ---------- */
-function snapBodies() {
-  const out = [];
-  G.chars.forEach(c => out.push(...c.bodies));
-  out.push(...G.world.dyn);
-  return out;
+/* ---------- mạng ----------
+   Mỗi máy tự mô phỏng nhân vật của MÌNH (phản hồi tức thì) và gửi tư thế ~20 lần/s.
+   Chủ phòng là "trọng tài" cho mọi vật thể chung, bàn nhấn, cửa, điểm hồi sinh, qua màn.
+   Bên nhận đặt gói vào bộ đệm chống giật (theo nhịp mô phỏng của bên gửi, độ trễ tự thích ứng 100–250 ms),
+   nội suy / ngoại suy ngắn, rồi KÉO các vật thể của bên kia về tư thế đó bằng vận tốc (không dịch chuyển tức thời)
+   nên chúng vẫn va chạm, đẩy thùng, đè bàn nhấn và bị bám được. */
+function mkBuf() { return { s: [], ds: [], base: null, delay: 9, tgt: 9, last: -1 }; }
+function bufPush(B, m) {
+  if (m.k <= B.last) return false;
+  B.last = m.k;
+  const d = performance.now() / DT - m.k;
+  B.ds.push(d); if (B.ds.length > 100) B.ds.shift();
+  const so = B.ds.slice().sort((x, y) => x - y), mn = so[0], p95 = so[Math.min(so.length - 1, Math.floor(so.length * 0.95))];
+  B.base = B.base == null || Math.abs(mn - B.base) > 60 ? mn : B.base + (mn - B.base) * 0.1;
+  B.tgt = clamp(p95 - mn + SNAP_EVERY + 1.5, 6, 15);
+  B.s.push(m); if (B.s.length > 40) B.s.shift();
+  return true;
+}
+function bufSample(B, now) {
+  const s = B.s; if (!s.length) return null;
+  B.delay += (B.tgt - B.delay) * 0.01;
+  const rk = now - B.base - B.delay;
+  const n = s.length;
+  if (n === 1 || rk <= s[0].k) return { a: s[0], b: s[0], u: 0 };
+  if (rk >= s[n - 1].k) {                     // gói đến trễ: ngoại suy tối đa ~8 nhịp
+    const a = s[n - 2], b = s[n - 1];
+    return { a, b, u: 1 + Math.min(rk - b.k, 8) / Math.max(1, b.k - a.k) };
+  }
+  let i = n - 2; while (i > 0 && s[i].k > rk) i--;
+  const a = s[i], b = s[i + 1];
+  return { a, b, u: (rk - a.k) / Math.max(1, b.k - a.k) };
+}
+function packPose(bodies) {
+  const p = [];
+  bodies.forEach(b => p.push(Math.round(b.position.x * 2), Math.round(b.position.y * 2), Math.round(wrapA(b.angle) * 300)));
+  return p;
+}
+// kéo vật thể về tư thế mẫu S (vị trí + vận tốc), relax(b) → true: vật mình đang đẩy/bám, chỉ hiệu chỉnh nhẹ
+function driveBodies(bodies, S, off, gain, relax) {
+  const A = S.a.p, B = S.b.p, u = S.u, span = Math.max(1, S.b.k - S.a.k), same = S.a === S.b;
+  bodies.forEach((b, i) => {
+    const j = (off + i) * 3; if (B[j] == null || A[j] == null) return;
+    const ax = A[j] / 2, ay = A[j + 1] / 2, bx = B[j] / 2, by = B[j + 1] / 2, a0 = A[j + 2] / 300, da = wrapA(B[j + 2] / 300 - a0);
+    const tx = ax + (bx - ax) * u, ty = ay + (by - ay) * u, ta = a0 + da * u;
+    const vx = same ? 0 : (bx - ax) / span, vy = same ? 0 : (by - ay) / span, va = same ? 0 : da / span;
+    const ex = tx - b.position.x, ey = ty - b.position.y;
+    if (ex * ex + ey * ey > 140 * 140) {
+      Body.setPosition(b, { x: tx, y: ty }); Body.setAngle(b, ta); Body.setVelocity(b, { x: vx, y: vy }); Body.setAngularVelocity(b, va); return;
+    }
+    const rl = relax && relax(b), g = rl ? 0.05 : gain, vb = rl ? 0.15 : 1;
+    Body.setVelocity(b, { x: b.velocity.x * (1 - vb) + vx * vb + ex * g, y: b.velocity.y * (1 - vb) + vy * vb + ey * g });
+    Body.setAngularVelocity(b, b.angularVelocity * (1 - vb) + va * vb + wrapA(ta - b.angle) * g);
+    if (!rl) b.force.y -= b.mass * GF;          // bù trọng lực: vật đi theo mẫu, không bị chùng
+  });
+}
+function netFlags(c, held) {
+  return (G.tick - c.gTick < 5 ? 1 : 0) | (c.arms[0].grab ? 2 : 0) | (c.arms[1].grab ? 4 : 0) | (c.dead ? 8 : 0) | (held.l ? 16 : 0) | (held.r ? 32 : 0);
+}
+function readFlags(c, fl, a) {
+  c.netG = !!(fl & 1); c.netDead = !!(fl & 8); c.netHeld = [!!(fl & 16), !!(fl & 32)]; c.aim = (a || 0) / 20;
+}
+function lerpQ(S, i) { const a = S.a.q[i], b = S.b.q[i]; if (a == null || b == null) return null; return clamp((a + (b - a) * Math.min(S.u, 1)) / 1000, 0, 1); }
+function driveRemote() {
+  const now = performance.now() / DT, W = G.world;
+  if (G.solo) return;
+  if (sim()) {
+    const c = G.chars[1]; if (!c || c.dead) return;
+    const S = bufSample(G.gbuf, now); if (!S) return;
+    if ((S.b.e | 0) !== (c.epoch | 0) || (S.b.f & 8)) return;
+    driveBodies(c.bodies, S, 0, 0.5);
+    readFlags(c, S.b.f, S.b.a);
+  } else {
+    const S = G.hS = bufSample(G.hbuf, now); if (!S) return;
+    const h = G.chars[0], me = G.chars[1];
+    driveBodies(h.bodies, S, 0, 0.5);
+    readFlags(h, S.b.f, S.b.a);
+    const relax = b => b.rd && b.rd.t !== 'h' && (G.tick - (b.rd.lt || -99) < 14 || me.arms.some(a => a.grab && a.grab.body === b));
+    driveBodies(W.dyn, S, 4, 0.4, relax);
+    W.plates.forEach((p, i) => { p.on = !!(S.b.b & (1 << i)); });
+  }
+}
+function carry(body, dx, dy) {
+  if (!dx && !dy) return;
+  G.chars.forEach(c => { if (isLocal(c) && c.gBody === body && G.tick - c.gTick < 3) c.bodies.forEach(b => Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy })); });
+}
+function kinFromSnap() {
+  const W = G.world, S = G.hS; if (!S) return;
+  W.kin.forEach((o, i) => {
+    const q = lerpQ(S, i); if (q == null) return;
+    const px = o.b.position.x, py = o.b.position.y;
+    o.s = q; applyKin(o);
+    if (o.type === 'mover') carry(o.b, o.b.position.x - px, o.b.position.y - py);
+  });
+  W.levers.forEach(l => { l.on = wrapA(l.b.angle) > 0.25; });
+  W.sig = signal(W);
+}
+function guestAfter() {
+  const me = G.chars[1], W = G.world;
+  if (me.dead) { me.dead--; if (me.dead === 18) { const p = cpPos(1); placeChar(me, p.x, p.y); } }
+  else if (me.trunk.position.y > W.L.deathY && !me.fallReq && G.phase !== 'idle') { me.fallReq = 1; Shell.send({ t: 'rq', lv: G.lv, fell: 1 }); }
 }
 function sendSnap() {
-  const p = [];
-  snapBodies().forEach(b => p.push(Math.round(b.position.x * 2), Math.round(b.position.y * 2), Math.round(wrapA(b.angle) * 300)));
-  const W = G.world;
-  const f = G.chars.map(c => (G.tick - c.gTick < 5 ? 1 : 0) | (c.arms[0].grab ? 2 : 0) | (c.arms[1].grab ? 4 : 0) | (c.dead ? 8 : 0)
-    | (G.inputs[c.i].l ? 16 : 0) | (G.inputs[c.i].r ? 32 : 0) | (c.ev || 0) << 6);
-  G.chars.forEach(c => { c.ev = 0; });
+  const W = G.world, h = G.chars[0];
+  const p = packPose([...h.bodies, ...W.dyn]);
   let pb = 0; W.plates.forEach((pl, i) => { if (pl.on) pb |= 1 << i; });
-  Shell.send({ t: 's', l: G.lv, k: G.tick, lt: G.ltick, p, f, a: G.chars.map(c => Math.round(c.aim * 20)), q: W.kin.map(o => Math.round(o.s * 1000)), b: pb, c: G.cp }, true);
+  Shell.send({ t: 's', l: G.lv, k: G.tick, lt: G.ltick, p, f: netFlags(h, G.inputs[0]), a: Math.round(h.aim * 20), q: W.kin.map(o => Math.round(o.s * 1000)), b: pb, c: G.cp }, true);
+}
+function sendStream() {
+  const me = G.chars[1];
+  Shell.send({ t: 'g', l: G.lv, k: G.tick, e: me.epoch | 0, p: packPose(me.bodies), f: netFlags(me, G.inputs[1]), a: Math.round(me.aim * 20) }, true);
 }
 function onSnap(m) {
   if (!G.world || m.l !== G.lv) return;
-  const now = performance.now() / DT;
-  const off = m.k - now;
-  if (G.clockOff == null || off > G.clockOff + 30 || off < G.clockOff - 60) G.clockOff = off;
-  else if (off > G.clockOff) G.clockOff += (off - G.clockOff) * 0.3; else G.clockOff += (off - G.clockOff) * 0.02;
-  if (m.k <= G.lastSnapK) return;
-  G.lastSnapK = m.k;
-  G.snaps.push(m); if (G.snaps.length > 30) G.snaps.shift();
+  if (!bufPush(G.hbuf, m)) return;
   G.ltick = m.lt;
   if (m.c > G.cp) { G.cp = m.c; onCp(m.c); }
-}
-function applySnaps() {
-  const sn = G.snaps; if (!sn.length) return;
-  const rk = performance.now() / DT + G.clockOff - INTERP_TICKS;
-  let a = sn[0], b = sn[0];
-  if (rk >= sn[sn.length - 1].k) a = b = sn[sn.length - 1];
-  else for (let i = 0; i < sn.length - 1; i++) if (sn[i].k <= rk && sn[i + 1].k > rk) { a = sn[i]; b = sn[i + 1]; break; }
-  const u = a === b ? 0 : clamp((rk - a.k) / (b.k - a.k), 0, 1);
-  const bodies = snapBodies();
-  bodies.forEach((bd, i) => {
-    const j = i * 3; if (a.p[j] == null || b.p[j] == null) return;
-    const x = (a.p[j] + (b.p[j] - a.p[j]) * u) / 2, y = (a.p[j + 1] + (b.p[j + 1] - a.p[j + 1]) * u) / 2;
-    const a0 = a.p[j + 2] / 300, a1 = b.p[j + 2] / 300;
-    Body.setPosition(bd, { x, y }); Body.setAngle(bd, a0 + wrapA(a1 - a0) * u);
-  });
-  const W = G.world;
-  W.kin.forEach((o, i) => { if (a.q[i] != null) { o.s = (a.q[i] + (b.q[i] - a.q[i]) * u) / 1000; applyKin(o); } });
-  W.plates.forEach((p, i) => { p.on = !!(b.b & (1 << i)); });
-  W.levers.forEach(l => { l.on = wrapA(l.b.angle) > 0.25; });
-  W.sig = signal(W);
-  G.chars.forEach((c, i) => {
-    const fl = b.f[i] || 0;
-    c.flags = fl; c.aim = (b.a[i] || 0) / 20;
-    c.netG = !!(fl & 1); c.netGrab = [!!(fl & 2), !!(fl & 4)]; c.netDead = !!(fl & 8); c.netHeld = [!!(fl & 16), !!(fl & 32)];
-  });
 }
 
 /* ---------- đầu vào cục bộ ---------- */
@@ -736,22 +827,10 @@ function readInput() {
   }
   inp.a = a;
 }
-let sentInp = null, lastInpSend = 0, pendingInp = false;
-function sendInput(now) {
-  const s = sentInp;
-  const btnChange = !s || s.mx !== inp.mx || s.jh !== inp.jh || s.jc !== inp.jc || s.l !== inp.l || s.r !== inp.r;
-  const aimChange = s && Math.abs(wrapA(s.a - inp.a)) > 0.05;
-  if (btnChange && now - lastInpSend > 35) {
-    Shell.send({ t: 'i', ...packInp() }); sentInp = { ...inp }; lastInpSend = now;
-  } else if (!btnChange && ((aimChange && now - lastInpSend > 80) || now - lastInpSend > 400)) {
-    Shell.send({ t: 'i', ...packInp() }, true); sentInp = { ...inp }; lastInpSend = now;
-  }
-}
-const packInp = () => ({ m: inp.mx, h: inp.jh, c: inp.jc, l: inp.l, r: inp.r, a: Math.round(inp.a * 100) });
 function requestRespawn() {
   if (G.phase !== 'play') return;
   if (sim()) killChar(G.chars[myIdx()], false);
-  else Shell.send({ t: 'rq', lv: G.lv });
+  else if (!G.chars[1].dead) Shell.send({ t: 'rq', lv: G.lv });
 }
 
 /* ---------- vòng chính ---------- */
@@ -760,14 +839,11 @@ function frame(t) {
   const dt = Math.min(0.1, (t - last) / 1000); last = t; G.t += dt;
   if (G.world && G.phase !== 'idle') {
     readInput();
-    if (sim() && !G.paused) {
+    if (!G.paused) {
       if (!G.botCtl) Object.assign(G.inputs[myIdx()], inp);
       acc += dt * 1000; let n = 0;
       while (acc >= DT && n < 5) { step(); acc -= DT; n++; }
       if (acc > DT) acc = 0;
-    } else {
-      sendInput(t);
-      applySnaps();
     }
     updateVis(dt);
     if (t - lastHud > 250) { lastHud = t; hud(); }
@@ -779,10 +855,13 @@ function frame(t) {
 /* ---------- vòng đời màn ---------- */
 function loadLevel(lv, first) {
   clearTimers();
-  G.lv = lv; G.world = buildWorld(lv); G.cp = 0; G.exitT = 0; G.ltick = 0; G.snaps = []; G.lastSnapK = -1; G.clockOff = null;
+  G.lv = lv; G.world = buildWorld(lv); G.cp = 0; G.exitT = 0; G.ltick = 0; 
   const [sx, sy] = G.world.L.spawn;
   G.chars = [makeChar(G.world, 0, sx - 26, sy), makeChar(G.world, 1, sx + 26, sy)];
   G.chars.forEach((c, i) => { c.jcSeen = G.inputs[i].jc; });
+  G.hbuf = mkBuf(); G.gbuf = mkBuf(); G.hS = null;
+  G.ids = [...G.world.statics, ...G.world.kin.map(o => o.b), ...G.world.dyn, ...G.chars[0].bodies, ...G.chars[1].bodies];
+  G.ids.forEach((b, i) => { b.rid = i; });
   G.parts = []; G.fade = 0; G.cam.init = false; G.inExit = [false, false];
   G.phase = 'ready';
   const name = G.world.L.name;
@@ -858,7 +937,7 @@ function dust(x, y, n, side) {
 function updateVis(dt) {
   G.chars.forEach(c => {
     const v = c.vis, p = c.trunk.position;
-    const g = sim() ? G.tick - c.gTick < 5 : c.netG;
+    const g = isLocal(c) ? G.tick - c.gTick < 5 : !!c.netG;
     if (v.px != null && dt > 0) {
       const vx = (p.x - v.px) / dt, vy = (p.y - v.py) / dt;
       v.vx = v.vx == null ? vx : v.vx + (vx - v.vx) * Math.min(1, dt * 12);
@@ -871,7 +950,7 @@ function updateVis(dt) {
     v.g = g; v.px = p.x; v.py = p.y;
     v.sq = Math.max(0, v.sq - dt * 4);
     v.blink -= dt; if (v.blink < -0.12) v.blink = 2 + Math.random() * 3.5;
-    const grabs = sim() ? c.arms.map(a => !!a.grab) : (c.netGrab || [false, false]);
+    const grabs = c.arms.map(a => !!a.grab);
     if (c.prevGrabs && grabs.some((x, i) => x && !c.prevGrabs[i]) && c.i === myIdx()) Shell.sfx.click();
     c.prevGrabs = grabs;
   });
@@ -884,7 +963,7 @@ function updateVis(dt) {
     const VW = CW / (S * dpr), VH = CH / (S * dpr), L = G.world.L;
     let tx = me.trunk.position.x, ty = me.trunk.position.y - 40;
     if (op && Math.abs(op.trunk.position.x - tx) < VW * 0.7 && Math.abs(op.trunk.position.y - ty) < VH * 0.7) { tx = tx * .72 + op.trunk.position.x * .28; ty = ty * .72 + (op.trunk.position.y - 40) * .28; }
-    const dead = sim() ? me.dead : me.netDead;
+    const dead = me.dead;
     if (dead) { tx = G.cam.x; ty = Math.min(ty, G.cam.y); }
     tx = VW >= L.w ? L.w / 2 : clamp(tx, VW / 2 - 60, L.w - VW / 2 + 60);
     ty = clamp(ty, -300 + VH / 2, L.deathY + 40 - VH / 2);
@@ -1247,14 +1326,14 @@ function portal(x, y, dk) {
 }
 function drawChar(c, dk) {
   const P = PAL[c.i], t = c.trunk, ang = t.angle, v = c.vis;
-  const dead = sim() ? c.dead : c.netDead;
+  const dead = isLocal(c) || sim() ? c.dead : c.netDead;
   const toW = l => { const p = rot(l, ang); return { x: t.position.x + p.x, y: t.position.y + p.y }; };
   const torso = toW(c.tl), head = toW(c.hl), sh = toW(c.sh);
   const hipL = toW({ x: c.tl.x - 6, y: c.tl.y + 11 }), hipR = toW({ x: c.tl.x + 6, y: c.tl.y + 11 });
   const f = c.foot.position, face = c.face;
   const g = v.g;
-  const grabs = sim() ? c.arms.map(a => !!a.grab) : (c.netGrab || [false, false]);
-  const heldB = sim() ? [G.inputs[c.i].l, G.inputs[c.i].r] : (c.netHeld || [0, 0]);
+  const grabs = c.arms.map(a => !!a.grab);
+  const heldB = isLocal(c) ? [G.inputs[c.i].l, G.inputs[c.i].r] : (c.netHeld || [0, 0]);
   const sq = v.sq;
   cx.lineCap = 'round'; cx.lineJoin = 'round';
   const arm = (k, col) => {
@@ -1341,10 +1420,15 @@ Shell.init({
       case 'start': if (!Shell.isHost) { resetMatch(); } break;
       case 'lvl': if (!Shell.isHost) loadLevel(m.lv, m.lv === 0 || !G.world); break;
       case 's': if (!Shell.isHost) onSnap(m); break;
-      case 'i': if (Shell.isHost && !G.botCtl) { const q = G.inputs[1]; q.mx = clamp(+m.m || 0, -1, 1); q.jh = m.h ? 1 : 0; q.jc = m.c | 0; q.l = m.l ? 1 : 0; q.r = m.r ? 1 : 0; q.a = (+m.a || 0) / 100; } break;
-      case 'rq': if (Shell.isHost && G.phase === 'play' && m.lv === G.lv) killChar(G.chars[1], false); break;
+      case 'g': if (Shell.isHost && G.world && m.l === G.lv) bufPush(G.gbuf, m); break;
+      case 'gb': remoteGrab(m); break;
+      case 'rq': if (Shell.isHost && G.world && (G.phase === 'play' || m.fell) && m.lv === G.lv) killChar(G.chars[1], !!m.fell); break;
       case 'cp': if (!Shell.isHost && G.world && m.lv === G.lv && m.n > G.cp) { G.cp = m.n; onCp(m.n); } break;
-      case 'fall': if (!Shell.isHost && G.world && m.lv === G.lv) onFall(m.i, m.f); break;
+      case 'fall': if (!Shell.isHost && G.world && m.lv === G.lv) {
+        const c = G.chars[m.i];
+        if (m.i === 1) { c.dead = 44; c.fallReq = 0; c.epoch = m.e | 0; releaseAll(c); G.chars[0].arms.forEach(a => { if (a.grab && a.grab.body.rd && a.grab.body.rd.ci === 1) release(a, true); }); }
+        onFall(m.i, m.f);
+      } break;
       case 'done': if (!Shell.isHost && G.world) onDone(m); break;
       case 'end': if (!Shell.isHost) onEnd(m); break;
     }

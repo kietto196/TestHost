@@ -113,13 +113,61 @@ const MAPS = [
 function newP(i) {
   return { x: SPAWN[i][0], y: SPAWN[i][1], tx: SPAWN[i][0], ty: SPAWN[i][1], a: i ? Math.PI : 0, ta: i ? Math.PI : 0, hp: HP, dead: false, deadT: 0,
     lastFire: -1e9, lastRecv: -1e9, ready: true, readyFlash: 0, dashAt: -1e9, dashUntil: 0, dx: 1, dy: 0, flash: 0, muzzle: 0,
-    moving: false, ph: 0, ghosts: [], dashing: false, dashReadyNote: true };
+    moving: false, ph: 0, ghosts: [], dashing: false, dashReadyNote: true, snaps: [], dashes: [], lastFireTs: -1e9 };
 }
 const G = {
   phase: 'idle', n: 0, rn: 0, map: 0, score: [0, 0], P: [newP(0), newP(1)], bullets: [], parts: [], floats: [], decals: [],
   heal: null, healIdx: 0, nextHeal: 0, fightStart: 0, shake: 0, timers: [], dead: new Set(), judgeT: null, bid: 1,
-  lastSend: 0, sent: '', hudKey: '', clockS: -1, hits: [0, 0], shots: [0, 0]
+  lastSend: 0, sent: '', hudKey: '', clockS: -1, hits: [0, 0], shots: [0, 0],
+  hitLog: [], oppIds: new Set(), echo: [], seenEv: new Set(), off: null, jit: 40, rt: 0, minRtt: null, lastOppTs: null, lastOppRecv: 0
 };
+/* đồng hồ của đối thủ: off = (giờ máy mình − giờ máy họ) nhỏ nhất đã thấy; jit = phần trễ dao động thêm */
+function clockSample(ts) {
+  if (ts == null) return;
+  const s = performance.now() - ts;
+  if (G.off == null || s < G.off) G.off = s; else G.off += (s - G.off) * .002;
+  G.jit += ((s - G.off) - G.jit) * .08;
+}
+// đo vòng trễ bằng cách gửi lại mốc giờ của nhau (kiểu NTP) → trễ 1 chiều nhỏ nhất
+function rttSample(e, eh) {
+  if (e == null) return;
+  const r = performance.now() - e - (eh || 0); if (r < 0) return;
+  if (G.minRtt == null || r < G.minRtt) G.minRtt = r; else G.minRtt += (r - G.minRtt) * .01;
+}
+const minDelay = () => G.minRtt == null ? Shell.lat() : G.minRtt / 2;
+// một tin có mốc giờ ts đã đi mất bao lâu
+const ageOf = ts => G.off == null ? Shell.lat() : Math.max(0, performance.now() - G.off - ts) + minDelay();
+/* Tin sự kiện quan trọng (bắn, trúng, báo máu, né) gửi kiểu chắc chắn VÀ kèm lại trong các gói vị trí 0,8 s sau đó:
+   mạng rơi gói thì bản kèm tới trước, khỏi chờ gửi lại; bên nhận lọc trùng theo loại + id. */
+const EV = new Set(['f', 'hit', 'hp', 'hitDenied']);
+function sendEv(m) { Shell.send(m); G.echo.push({ m, at: performance.now() }); if (G.echo.length > 8) G.echo.shift(); }
+const interpBuf = () => Math.max(10, Math.min(80, G.jit * .8 + 5));
+const remoteNow = () => G.off == null ? -1e9 : performance.now() - G.off - interpBuf();
+const oppInv = (p, rt) => p.dashes.some(ds => rt >= ds - 20 && rt <= ds + DASH_T + 60);
+function addSnap(p, s) {
+  const a = p.snaps; let i = a.length;
+  while (i > 0 && a[i - 1].ts > s.ts) i--;
+  if (i > 0 && a[i - 1].ts === s.ts) a[i - 1] = s; else a.splice(i, 0, s);
+  if (a.length > 24) a.shift();
+}
+// vị trí đối thủ tại thời điểm rt (theo đồng hồ của họ): nội suy, hoặc ngoại suy ngắn ≤ 110 ms
+function sampleAt(p, rt) {
+  const a = p.snaps; if (!a.length) return null;
+  if (rt <= a[0].ts) return { x: a[0].x, y: a[0].y, a: a[0].a };
+  for (let i = a.length - 1; i >= 0; i--) {
+    if (a[i].ts <= rt) {
+      const s0 = a[i], s1 = a[i + 1];
+      if (s1) { const u = (rt - s0.ts) / Math.max(1, s1.ts - s0.ts); return { x: s0.x + (s1.x - s0.x) * u, y: s0.y + (s1.y - s0.y) * u, a: s0.a + angDiff(s0.a, s1.a) * u }; }
+      const q = a[i - 1], o = { x: s0.x, y: s0.y, a: s0.a };
+      if (q && s0.ts - q.ts < 220 && s0.ts - q.ts > 0) {
+        const e = Math.min(110, rt - s0.ts) / (s0.ts - q.ts);
+        o.x += (s0.x - q.x) * e; o.y += (s0.y - q.y) * e; resolve(o);
+      }
+      return o;
+    }
+  }
+  return null;
+}
 const meI = () => Shell.isHost ? 0 : 1;
 const ME = () => G.P[meI()], OPP = () => G.P[1 - meI()];
 const COL = i => i === 0 ? C_HOST : C_GUEST;
@@ -451,7 +499,7 @@ function puff(x, y, col) {
   burst(x, y, col, 22, 380, .6, 4);
   G.parts.push({ x, y, vx: 0, vy: 0, t: 0, life: .45, col, r: 10, k: 'ring' });
 }
-function floatTxt(x, y, text, col) { G.floats.push({ x, y, text, col, t: 0 }); }
+function floatTxt(x, y, text, col, noHeart) { G.floats.push({ x, y, text, col, t: 0, noHeart }); }
 
 /* ---------- bắn ---------- */
 function spawnBullet(o, id, x, y, a) {
@@ -473,7 +521,8 @@ function tryFire() {
   G.shots[meI()]++;
   G.shake = Math.max(G.shake, 3);
   Shell.sfx.hit2(); Shell.sfx.drop();
-  Shell.send({ t: 'f', n: G.n, id, x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, a: Math.round(a * 1000) / 1000, px: Math.round(me.x), py: Math.round(me.y) });
+  b.fm = { t: 'f', n: G.n, id, ts: Math.round(now), x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, a: Math.round(a * 1000) / 1000, px: Math.round(me.x * 10) / 10, py: Math.round(me.y * 10) / 10 };
+  sendEv(b.fm);
   return true;
 }
 function tryDash() {
@@ -483,12 +532,15 @@ function tryDash() {
   if (!dx && !dy) { dx = Math.cos(me.a); dy = Math.sin(me.a); }
   const l = Math.hypot(dx, dy); me.dx = dx / l; me.dy = dy / l;
   me.dashAt = now; me.dashUntil = now + DASH_T; me.dashReadyNote = false;
+  Shell.send({ t: 'dash', n: G.n, ts: Math.round(now) });   // cửa sổ bất tử khi lướt (đồng hồ của mình)
   Shell.sfx.jump();
   burst(me.x, me.y + 10, 'rgba(255,255,255,.8)', 8, 120, .35, 4);
 }
-// đạn bay; checkMe: xét trúng mình (chỉ với đạn của đối thủ)
-function stepBullet(b, dt, checkMe) {
-  const dist = BSPEED * dt, n = Math.max(1, Math.ceil(dist / 6)), me = ME();
+/* Đạn bay. Luật trúng: NGƯỜI BẮN quyết định theo đúng hình đối thủ đang hiện trên màn hình của mình.
+   Đạn của đối thủ trên máy mình: khi chạm sát mình thì "giữ" lại chờ phán quyết (≤ trễ + 150 ms) rồi mới bay tiếp. */
+function stepBullet(b, dt) {
+  if (b.hold) return;
+  const dist = BSPEED * dt, n = Math.max(1, Math.ceil(dist / 6)), me = ME(), opp = OPP(), mine = b.o === meI();
   for (let i = 0; i < n && !b.dead; i++) {
     const px = b.x, py = b.y;
     b.x += b.vx * dt / n; b.y += b.vy * dt / n;
@@ -497,21 +549,51 @@ function stepBullet(b, dt, checkMe) {
       if (G.phase !== 'idle') Shell.sfx.wall();
       return;
     }
-    if (checkMe && b.o !== meI() && canBeHit(me)) {
-      const dx = b.x - me.x, dy = b.y - me.y;
-      if (dx * dx + dy * dy < (PR + BR) * (PR + BR)) { b.dead = true; gotHit(b); return; }
+    if (G.phase !== 'fight') continue;
+    if (mine) {
+      if (opp.dead || oppInv(opp, G.rt)) continue;
+      const dx = b.x - opp.x, dy = b.y - opp.y, r = PR + BR + 3;
+      if (dx * dx + dy * dy < r * r) { b.dead = true; b.hitFx = true; shotHit(b); return; }
+    } else if (!b.released && !me.dead && performance.now() > me.dashUntil + 40) {
+      const dx = b.x - me.x, dy = b.y - me.y, r = PR + BR + 6;
+      if (dx * dx + dy * dy < r * r) { b.hold = performance.now(); b.holdUntil = b.hold + Math.min(700, minDelay() + G.jit * 1.5 + 150); return; }
     }
   }
   b.age += dt;
 }
-function canBeHit(me) { return G.phase === 'fight' && !me.dead && performance.now() > me.dashUntil + 40; }
-function gotHit(b) {
-  const me = ME();
+// mình bắn trúng (theo màn hình của mình) → hiệu ứng ngay + báo đối thủ
+function shotHit(b) {
+  if (G.hitLog.length > 300) G.hitLog.splice(0, 100);
+  const opp = OPP(), oi = 1 - meI();
+  G.hitLog.push({ k: 'shot', id: b.id, t: performance.now() });
+  opp.hp = Math.max(0, opp.hp - 1); opp.flash = 1; G.hits[meI()]++;
+  floatTxt(opp.x, opp.y - 30, '−1', '#ff4b5c');
+  burst(b.x, b.y, COL(oi), 14, 260, .45, 3); burst(b.x, b.y, '#fff', 6, 200, .3, 2);
+  G.shake = Math.max(G.shake, 6); Shell.sfx.hit();
+  sendEv({ t: 'hit', n: G.n, id: b.id, dmg: 1, rt: G.off == null ? null : Math.round(G.rt), ht: Math.round(performance.now()), at: { x: Math.round(opp.x), y: Math.round(opp.y) }, fm: b.fm });
+  hudTick(true);
+}
+// đối thủ báo bắn trúng mình
+function onHitMe(m) {
+  const me = ME(), now = performance.now();
+  if (!G.oppIds.has(m.id) && m.fm && m.fm.id === m.id) onMsg(m.fm);   // tin bắn bị rơi/chậm → dùng bản kèm theo
+  const b = G.bullets.find(x => x.o !== meI() && x.id === m.id);
+  const deny = why => { if (b) { b.hold = null; b.released = true; } G.hitLog.push({ k: 'deny', id: m.id, why }); sendEv({ t: 'hitDenied', n: G.n, id: m.id }); };
+  if (G.phase !== 'fight' || me.dead) return deny('phase');
+  if (!G.oppIds.has(m.id)) return deny('id');
+  // né bằng lướt: đang lướt lúc người bắn thấy mình (rt), hoặc lúc viên đạn thật sự chạm tới (ht đổi sang giờ máy mình)
+  const inDash = t => me.dashAt > 0 && t >= me.dashAt - 80 && t <= me.dashUntil + 60;
+  if (m.rt != null && inDash(m.rt + 60)) return deny('dash');
+  if (m.ht != null && G.off != null && inDash(m.ht + G.off - minDelay())) return deny('dash');   // đang lướt đúng lúc đó → né
+  G.oppIds.delete(m.id);
+  if (b) b.dead = true;
+  G.hitLog.push({ k: 'took', id: m.id, t: now, vis: b ? (b.hold ? 'held' : b.released ? 'late' : 'early') : 'none', dd: b ? Math.round(((me.x - b.x) * b.vx + (me.y - b.y) * b.vy) / BSPEED) : null, age: Math.round(minDelay()), lt: m.ht != null && G.off != null ? Math.round(m.ht + G.off - minDelay() - me.dashAt) : null, rtd: m.rt != null ? Math.round(m.rt - me.dashAt) : null });
   me.hp = Math.max(0, me.hp - 1); me.flash = 1; G.shake = 16;
   floatTxt(me.x, me.y - 30, '−1', '#ff4b5c');
-  burst(me.x, me.y, COL(meI()), 14, 260, .45, 3); burst(me.x, me.y, '#fff', 6, 200, .3, 2);
+  const hx = b ? b.x : me.x, hy = b ? b.y : me.y;
+  burst(hx, hy, COL(meI()), 14, 260, .45, 3); burst(me.x, me.y, '#fff', 6, 200, .3, 2);
   Shell.sfx.miss();
-  Shell.send({ t: 'hit', n: G.n, id: b.id, hp: me.hp, x: Math.round(me.x), y: Math.round(me.y) });
+  sendEv({ t: 'hp', n: G.n, id: m.id, hp: me.hp, x: Math.round(me.x), y: Math.round(me.y) });
   if (me.hp <= 0) die(me, meI());
   hudTick(true);
 }
@@ -537,7 +619,7 @@ function hostNewRound() {
 }
 function beginRound(n, rn, map) {
   clearTimers();
-  G.n = n; G.rn = rn; G.map = map; G.P = [newP(0), newP(1)]; G.bullets = []; G.floats = []; G.decals = []; G.heal = null; G.dead = new Set();
+  G.n = n; G.rn = rn; G.map = map; G.P = [newP(0), newP(1)]; G.bullets = []; G.floats = []; G.decals = []; G.heal = null; G.dead = new Set(); G.oppIds = new Set(); G.echo = [];
   G.healIdx = rn % 2; G.phase = 'count'; G.clockS = -1; bgKey = '';
   Shell.hud({ center: 'Ván ' + rn, centerSub: MAPS[map].name });
   hudTick(true);
@@ -550,7 +632,7 @@ function beginRound(n, rn, map) {
 function hostDeath(i) {
   if (G.phase !== 'fight') return;
   G.dead.add(i);
-  if (!G.judgeT) G.judgeT = later(() => { G.judgeT = null; if (G.phase !== 'fight') return; const w = G.dead.size >= 2 ? -1 : (G.dead.has(0) ? 1 : 0); hostEnd(w, 'kill'); }, 300);
+  if (!G.judgeT) G.judgeT = later(() => { G.judgeT = null; if (G.phase !== 'fight') return; const w = G.dead.size >= 2 ? -1 : (G.dead.has(0) ? 1 : 0); hostEnd(w, 'kill'); }, 300 + Math.min(300, Shell.lat()));
 }
 function hostEnd(w, why) {
   const s = G.score.slice(); if (w >= 0) s[w]++;
@@ -677,17 +759,26 @@ function update(dt, now) {
     }
     // gửi vị trí
     const sig = Math.round(me.x) + ',' + Math.round(me.y) + ',' + Math.round(me.a * 50);
-    if (now - G.lastSend > 62 && (sig !== G.sent || now - G.lastSend > 300)) {
+    if (now - G.lastSend > 50 && (sig !== G.sent || now - G.lastSend > 250)) {
       G.lastSend = now; G.sent = sig;
-      Shell.send({ t: 'p', n: G.n, x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, a: Math.round(me.a * 100) / 100, d: me.dashing ? 1 : 0 }, true);
+      const msg = { t: 'p', n: G.n, ts: Math.round(now), x: Math.round(me.x * 10) / 10, y: Math.round(me.y * 10) / 10, a: Math.round(me.a * 100) / 100 };
+      if (G.lastOppTs != null) { msg.e = G.lastOppTs; msg.eh = Math.round(now - G.lastOppRecv); }
+      const ev = G.echo.filter(e => now - e.at < 1500 && e.m.n === G.n).map(e => e.m); if (ev.length) msg.ev = ev;
+      if (now - me.dashAt < 1000) msg.ds = Math.round(me.dashAt);
+      Shell.send(msg, true);
     }
   } else if (me.dead) me.moving = false;
   // đối thủ: nội suy về vị trí nhận được
+  // (luồng có mốc giờ của đối thủ + bộ đệm rung nhỏ thích ứng + ngoại suy ngắn)
+  G.rt = remoteNow();
   if (!opp.dead) {
-    const ox = opp.x, oy = opp.y, f = Math.min(1, dt * (opp.dashing ? 22 : 14));
+    const ox = opp.x, oy = opp.y, s = sampleAt(opp, G.rt);
+    if (s) { opp.tx = s.x; opp.ty = s.y; opp.ta = s.a; }
+    opp.dashing = opp.dashes.some(ds => G.rt >= ds && G.rt <= ds + DASH_T);
+    const f = Math.min(1, dt * 30);
     opp.x += (opp.tx - opp.x) * f; opp.y += (opp.ty - opp.y) * f;
     if (Math.hypot(opp.tx - opp.x, opp.ty - opp.y) > 220) { opp.x = opp.tx; opp.y = opp.ty; }
-    opp.a += angDiff(opp.a, opp.ta) * Math.min(1, dt * 16);
+    opp.a += angDiff(opp.a, opp.ta) * Math.min(1, dt * 24);
     const sp = Math.hypot(opp.x - ox, opp.y - oy) / Math.max(dt, 1e-3);
     opp.moving = sp > 20; if (opp.moving) opp.ph += dt * 14;
     if (opp.dashing) opp.ghosts.push({ x: opp.x, y: opp.y, t: 0 });
@@ -695,7 +786,11 @@ function update(dt, now) {
   G.P.forEach(p => { p.flash = Math.max(0, p.flash - dt * 6); p.muzzle = Math.max(0, p.muzzle - dt * 9); p.readyFlash = Math.max(0, p.readyFlash - dt * 2.2); p.dry = Math.max(0, (p.dry || 0) - dt * 4);
     p.ghosts.forEach(g => g.t += dt); p.ghosts = p.ghosts.filter(g => g.t < .22); });
   // đạn
-  G.bullets.forEach(b => { if (b.dead) return; b.trail.push([b.x, b.y]); if (b.trail.length > 7) b.trail.shift(); stepBullet(b, dt, true); });
+  G.bullets.forEach(b => {
+    if (b.dead) return;
+    if (b.hold) { if (now > b.holdUntil) { b.hold = null; b.released = true; } else { b.trail.push([b.x, b.y]); if (b.trail.length > 7) b.trail.shift(); return; } }
+    b.trail.push([b.x, b.y]); if (b.trail.length > 7) b.trail.shift(); stepBullet(b, dt);
+  });
   G.bullets = G.bullets.filter(b => !b.dead || (b.fade = (b.fade || 0) + dt) < .08);
   // host: hộp máu + hết giờ
   if (Shell.isHost && G.phase === 'fight') {
@@ -833,8 +928,9 @@ function draw(now) {
     const [sx, sy] = toS(f.x, f.y), u = f.t / 1.1, fs = Math.max(14, 20 * k * ui);
     cx.globalAlpha = 1 - u * u; const yy = sy - u * 40 * k * ui;
     cx.font = `800 ${fs}px "Baloo 2", system-ui, sans-serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-    cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,.45)'; cx.strokeText(f.text, sx - fs * .45, yy); cx.fillStyle = f.col; cx.fillText(f.text, sx - fs * .45, yy);
-    cx.fillStyle = f.col; heartPath(cx, sx + fs * .55, yy, fs * .38); cx.fill();
+    const tx = f.noHeart ? sx : sx - fs * .45;
+    cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,.45)'; cx.strokeText(f.text, tx, yy); cx.fillStyle = f.col; cx.fillText(f.text, tx, yy);
+    if (!f.noHeart) { cx.fillStyle = f.col; heartPath(cx, sx + fs * .55, yy, fs * .38); cx.fill(); }
     cx.globalAlpha = 1;
   });
   // tâm ngắm chuột
@@ -863,38 +959,51 @@ function loop() {
 function onMsg(m) {
   if (m.t === 'round') { if (!Shell.isHost) { G.score = m.s.slice(); Shell.setScore(m.s[1], m.s[0]); beginRound(m.n, m.rn, m.m); } return; }
   if (m.n !== G.n) return;
+  if (EV.has(m.t)) { const key = m.t + ':' + m.id; if (G.seenEv.has(key)) return; G.seenEv.add(key); if (G.seenEv.size > 400) G.seenEv = new Set([...G.seenEv].slice(-200)); }
   const opp = OPP(), oi = 1 - meI(), now = performance.now();
   switch (m.t) {
     case 'p':
+      clockSample(m.ts); rttSample(m.e, m.eh);
+      if (G.lastOppTs == null || m.ts > G.lastOppTs) { G.lastOppTs = m.ts; G.lastOppRecv = now; }
+      if (Array.isArray(m.ev)) m.ev.slice(0, 8).forEach(e => { if (e && EV.has(e.t)) onMsg(e); });
       if (opp.dead) return;
-      opp.tx = m.x; opp.ty = m.y; opp.ta = m.a; opp.dashing = !!m.d;
-      if (G.phase === 'count') { opp.x = m.x; opp.y = m.y; }
+      addSnap(opp, { ts: m.ts, x: m.x, y: m.y, a: m.a });
+      if (m.ds != null && !opp.dashes.includes(m.ds)) opp.dashes.push(m.ds);
+      if (G.phase === 'count') { opp.x = opp.tx = m.x; opp.y = opp.ty = m.y; }
+      break;
+    case 'dash':
+      clockSample(m.ts);
+      if (!opp.dashes.includes(m.ts)) { opp.dashes.push(m.ts); if (opp.dashes.length > 6) opp.dashes.shift(); }
       break;
     case 'f': {
       if (opp.dead || !(G.phase === 'fight' || G.phase === 'end')) return;
-      if (now - opp.lastRecv < RELOAD - 450) return;   // chống bắn nhanh hơn luật
-      opp.lastRecv = now; opp.lastFire = now - Shell.lat(); opp.muzzle = 1;
-      opp.tx = m.px; opp.ty = m.py; opp.ta = m.a; opp.a = m.a;
+      // chống bắn nhanh hơn luật: theo mốc giờ của người bắn (giờ nhận bị dồn cục khi mạng rung/rơi gói nên không dùng)
+      clockSample(m.ts);
+      if (!(m.ts - opp.lastFireTs >= RELOAD - 30)) { G.hitLog.push({ k: 'spam', id: m.id, d1: m.ts - opp.lastFireTs }); return; }
+      const age = Math.min(1500, ageOf(m.ts));
+      opp.lastRecv = now; opp.lastFireTs = m.ts; opp.lastFire = now - age; opp.muzzle = 1;
+      addSnap(opp, { ts: m.ts, x: m.px, y: m.py, a: m.a }); opp.a = opp.ta = m.a;
+      G.oppIds.add(m.id);
       const b = spawnBullet(oi, m.id, m.x, m.y, m.a);
       G.shots[oi]++;
-      const adv = Math.min(150, Shell.lat()) / 1000;
-      for (let s = 0; s < adv && !b.dead; s += 1 / 120) stepBullet(b, Math.min(1 / 120, adv - s), true);
+      const adv = Math.min(1500, age) / 1000;   // tua đạn tới đúng vị trí hiện tại
+      for (let s = 0; s < adv && !b.dead && !b.hold; s += 1 / 120) stepBullet(b, Math.min(1 / 120, adv - s));
       if (blockedBullet(m.x, m.y)) b.dead = true;
       Shell.sfx.hit2();
       break;
     }
-    case 'hit': {
-      const b = G.bullets.find(x => x.o === meI() && x.id === m.id);
-      if (b) b.dead = true;
-      opp.x = opp.tx = m.x; opp.y = opp.ty = m.y;
-      const was = opp.hp; opp.hp = m.hp; opp.flash = 1; G.hits[meI()]++;
-      if (m.hp < was) floatTxt(opp.x, opp.y - 30, '−1', '#ff4b5c');
-      burst(opp.x, opp.y, COL(oi), 14, 260, .45, 3); burst(opp.x, opp.y, '#fff', 6, 200, .3, 2);
-      G.shake = Math.max(G.shake, 6); Shell.sfx.hit();
-      if (m.hp <= 0) die(opp, oi);
+    case 'hit': onHitMe(m); break;                 // người bắn báo đã trúng mình
+    case 'hp':                                      // người bị bắn báo lượng máu thật
+      opp.hp = m.hp;
+      if (m.hp <= 0 && !opp.dead) { if (m.x != null) { opp.x = m.x; opp.y = m.y; } die(opp, oi); }
       hudTick(true);
       break;
-    }
+    case 'hitDenied':                               // đối thủ đã lướt né kịp → hoàn lại
+      G.hitLog.push({ k: 'denied', id: m.id, t: now });
+      opp.hp = Math.min(HP, opp.hp + 1);
+      floatTxt(opp.x, opp.y - 30, 'NÉ!', '#7fe7ff', true);
+      hudTick(true);
+      break;
     case 'heal': if (!Shell.isHost && G.phase === 'fight') G.heal = { id: m.id, x: m.x, y: m.y, t0: now }; break;
     case 'pk':
       if (!Shell.isHost) return;
@@ -923,7 +1032,7 @@ Shell.init({
     'Thắng <b>3 ván</b> trước là thắng trận. Mỗi ván đổi một đấu trường.'
   ],
   keys: [[['W', 'A', 'S', 'D'], 'di chuyển'], ['Chuột', 'ngắm'], ['Click', 'bắn'], [['Shift', 'Space'], 'lướt'], ['Cảm ứng', 'cần trái đi · cần phải ngắm, thả để bắn']],
-  onStart() { resetMatch(); layout(); resize(); document.getElementById('tpad').style.setProperty('--kc', Shell.myColor); if (Shell.isHost) hostNewRound(); },
+  onStart() { G.seenEv = new Set(); G.off = null; G.jit = 40; G.minRtt = null; G.lastOppTs = null; resetMatch(); layout(); resize(); document.getElementById('tpad').style.setProperty('--kc', Shell.myColor); if (Shell.isHost) hostNewRound(); },
   onRematch() { resetMatch(); if (Shell.isHost) hostNewRound(); },
   onStop() { clearTimers(); G.phase = 'idle'; keys.clear(); inp.tmx = inp.tmy = 0; inp.aimOn = false; },
   onTheme() { bgKey = ''; },
